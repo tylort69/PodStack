@@ -1,0 +1,29 @@
+[package]
+name = "podstack"
+description = "EVE Online character manager for Linux (GTK4, Material You)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "podstack"
+path = "src/main.rs"
+
+[dependencies]
+podstack-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+futures.workspace = true
+regex.workspace = true
+gtk = { package = "gtk4", version = "0.11", features = ["v4_20"] }
+pango = { version = "0.22", features = ["v1_56"] }
+material-colors = "0.5"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# desktop alerts and the system tray (StatusNotifierItem: waybar, etc.)
+notify-rust = "4"
+ksni = "0.3"

@@ -1,0 +1,27 @@
+[package]
+name = "podstack-core"
+description = "EVE Online data layer for PodStack: SSO, ESI, storage and character models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+futures.workspace = true
+regex.workspace = true
+base64 = "0.22"
+sha2 = "0.10"
+rand = "0.9"
+url = "2"
+dirs = "6"
+parking_lot = "0.12"
+# password-protected backups
+aes-gcm = "0.10"
+argon2 = "0.5"
