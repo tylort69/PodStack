@@ -49,7 +49,8 @@ for reference: port behaviour from it, but don't edit it. The 3D ship viewer is 
   ligature names (`w::icon("rocket_launch")`, see fonts.google.com/icons?icon.set=Material+Icons).
 - Colors come only from the scheme's roles via the style classes in `theme/css.rs` (`dim`, `primary-text`,
   `error-text`, `success-text`, `warning-text`, `status-*`, `card*`, type scale classes like `title-medium`). Don't
-  hard-code colors; for cairo drawing use `theme::rgba("primary")`.
+  hard-code colors; for cairo drawing use `theme::rgba("primary")`. A page needing its own styles registers them with
+  `crate::theme::add_css(CSS)` (a `const CSS: &str` in the page module, prefixed class names, roles only).
 - Empty data: `w::empty_state(icon, title, body)`; data needing a missing scope: `w::scope_notice(scope)` (check
   `c.refreshes.get(key).and_then(|r| r.error.as_deref()) == Some("scope")`).
 - Numbers: `podstack_core::fmt` (`isk`, `isk_short`, `int`, `sp`, `duration`, `relative`, `datetime`, `escape` for

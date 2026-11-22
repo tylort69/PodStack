@@ -18,6 +18,7 @@ use std::cell::RefCell;
 use std::process::Command;
 
 thread_local! {
+    static EXTRA_CSS: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
     static PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
     static CURRENT: RefCell<Option<Scheme>> = const { RefCell::new(None) };
 }
@@ -147,7 +148,12 @@ pub fn apply(scheme: &Scheme) {
     if let Some(settings) = gtk::Settings::default() {
         settings.set_gtk_interface_color_scheme(if scheme.dark { gtk::InterfaceColorScheme::Dark } else { gtk::InterfaceColorScheme::Light });
     }
-    let css = css::stylesheet(scheme);
+    let mut css = css::stylesheet(scheme);
+    EXTRA_CSS.with(|e| {
+        for extra in e.borrow().iter() {
+            css.push_str(extra);
+        }
+    });
     PROVIDER.with(|p| {
         let mut p = p.borrow_mut();
         let provider = p.get_or_insert_with(|| {
@@ -158,6 +164,25 @@ pub fn apply(scheme: &Scheme) {
         provider.load_from_string(&css);
     });
     CURRENT.with(|c| *c.borrow_mut() = Some(scheme.clone()));
+}
+
+/// Adds a page's own styles to the app stylesheet (once; call it from the page's `build`). Use only the scheme's
+/// color roles (`@primary`, `@surface_container`, …) so it follows the theme.
+pub fn add_css(css: &'static str) {
+    let added = EXTRA_CSS.with(|e| {
+        let mut e = e.borrow_mut();
+        if e.iter().any(|x| std::ptr::eq(*x, css)) {
+            false
+        } else {
+            e.push(css);
+            true
+        }
+    });
+    if added {
+        if let Some(s) = CURRENT.with(|c| c.borrow().clone()) {
+            apply(&s);
+        }
+    }
 }
 
 /// The scheme in use (for widgets that draw with cairo, e.g. charts).
