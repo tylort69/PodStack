@@ -26,6 +26,7 @@ struct Col<T> {
 }
 
 type RowAction<T> = Rc<dyn Fn(&T)>;
+type RowTest<T> = Rc<dyn Fn(&T) -> bool>;
 
 pub struct Table<T: 'static> {
     rows: Rc<Vec<T>>,
@@ -33,8 +34,10 @@ pub struct Table<T: 'static> {
     on_activate: Option<RowAction<T>>,
     own_scroll: bool,
     min_height: Option<i32>,
+    max_height: Option<i32>,
     initial_sort: Option<(usize, bool)>,
     empty: Option<String>,
+    pinned: Option<RowTest<T>>,
 }
 
 fn cell_label(s: &str, numeric: bool) -> gtk::Widget {
@@ -50,7 +53,7 @@ fn cell_label(s: &str, numeric: bool) -> gtk::Widget {
 
 impl<T: 'static> Table<T> {
     pub fn new(rows: Vec<T>) -> Self {
-        Table { rows: Rc::new(rows), cols: vec![], on_activate: None, own_scroll: true, min_height: None, initial_sort: None, empty: None }
+        Table { rows: Rc::new(rows), cols: vec![], on_activate: None, own_scroll: true, min_height: None, max_height: None, initial_sort: None, empty: None, pinned: None }
     }
 
     /// Text column, sorted alphabetically.
@@ -130,6 +133,19 @@ impl<T: 'static> Table<T> {
         self
     }
 
+    /// Scrolls itself once taller than `px`, and is only as tall as its rows below that (for a table sharing the
+    /// page with another one).
+    pub fn max_height(mut self, px: i32) -> Self {
+        self.max_height = Some(px);
+        self
+    }
+
+    /// Rows for which `f` is true stay at the bottom whichever way the table is sorted (a totals row).
+    pub fn pinned_last(mut self, f: impl Fn(&T) -> bool + 'static) -> Self {
+        self.pinned = Some(Rc::new(f));
+        self
+    }
+
     /// Shown instead of an empty table.
     pub fn empty_text(mut self, t: &str) -> Self {
         self.empty = Some(t.into());
@@ -180,7 +196,24 @@ impl<T: 'static> Table<T> {
             if let Some(sort) = &col.sort {
                 let rows = self.rows.clone();
                 let sort = sort.clone();
-                let sorter = gtk::CustomSorter::new(move |a, b| sort(&rows[idx(a)], &rows[idx(b)]).into());
+                let pinned = self.pinned.clone();
+                // The column view inverts a column's order for descending sorts, so a pinned row has to know the
+                // direction to stay last. Weak: the column view owns the sorter that owns this closure.
+                let view_sorter = cv.sorter().and_downcast::<gtk::ColumnViewSorter>().map(|s| s.downgrade());
+                let sorter = gtk::CustomSorter::new(move |a, b| {
+                    let (a, b) = (&rows[idx(a)], &rows[idx(b)]);
+                    if let Some(p) = &pinned {
+                        let (pa, pb) = (p(a), p(b));
+                        if pa != pb {
+                            let descending = view_sorter
+                                .as_ref()
+                                .and_then(|w| w.upgrade())
+                                .is_some_and(|s| s.primary_sort_order() == gtk::SortType::Descending);
+                            return if pa != descending { Ordering::Greater } else { Ordering::Less }.into();
+                        }
+                    }
+                    sort(a, b).into()
+                });
                 c.set_sorter(Some(&sorter));
             }
             cv.append_column(&c);
@@ -220,8 +253,12 @@ impl<T: 'static> Table<T> {
             if let Some(h) = self.min_height {
                 sw.set_min_content_height(h);
             }
+            if let Some(h) = self.max_height {
+                sw.set_max_content_height(h);
+                sw.set_vexpand(false);
+            }
             frame.append(&sw);
-            frame.set_vexpand(true);
+            frame.set_vexpand(self.max_height.is_none());
         } else {
             let sw = gtk::ScrolledWindow::new();
             sw.set_vscrollbar_policy(gtk::PolicyType::Never);

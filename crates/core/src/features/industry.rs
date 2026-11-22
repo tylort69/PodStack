@@ -1,10 +1,12 @@
-//! Industry jobs, planetary extractors and asset lists, as the Assets, Asset Search, Industry and PI pages show them.
+//! Industry jobs and slots, owned blueprints, planetary extractors and asset lists, as the Assets, Asset Search,
+//! Industry and PI pages show them.
 //!
 //! Everything takes `now` so the countdown logic can be tested.
 
+use crate::blueprints::IndustryData;
 use crate::character::Character;
 use crate::domains::assets::{Asset, AssetsData};
-use crate::domains::industry::{Colony, Extractor, Job};
+use crate::domains::industry::{Colony, Extractor, Job, OwnedBlueprint};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
@@ -126,6 +128,322 @@ pub fn job_counts(jobs: &[(&Character, &Job)], now: DateTime<Utc>) -> JobCounts 
         }
     }
     c
+}
+
+// ---------- job slots ----------
+
+/// The three kinds of industry job slot a character has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SlotKind {
+    Manufacturing,
+    /// Research, copying and invention share the science slots.
+    Science,
+    Reactions,
+}
+
+impl SlotKind {
+    pub const ALL: [SlotKind; 3] = [SlotKind::Manufacturing, SlotKind::Science, SlotKind::Reactions];
+
+    /// The slot an ESI job activity takes.
+    pub fn of_activity(activity_id: i64) -> SlotKind {
+        match activity_id {
+            1 => SlotKind::Manufacturing,
+            9 | 11 => SlotKind::Reactions,
+            _ => SlotKind::Science,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SlotKind::Manufacturing => "Manufacturing",
+            SlotKind::Science => "Science",
+            SlotKind::Reactions => "Reactions",
+        }
+    }
+
+    /// Position in [`SlotKind::ALL`] and in the `[i64; 3]` arrays below.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// How a character's slots are used right now.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SlotUsage {
+    /// Jobs holding a slot (active, paused or ready to deliver), per [`SlotKind::index`].
+    pub used: [i64; 3],
+    pub ready: usize,
+    /// When the next running job ends.
+    pub next_end: Option<DateTime<Utc>>,
+}
+
+/// Slot use of one character's jobs. A finished job keeps its slot until it's delivered, so ready jobs count.
+pub fn slot_usage(jobs: &[Job], now: DateTime<Utc>) -> SlotUsage {
+    let mut u = SlotUsage::default();
+    for j in jobs {
+        let state = job_state(j, now);
+        if state == JobState::Closed {
+            continue;
+        }
+        u.used[SlotKind::of_activity(j.activity_id).index()] += 1;
+        match state {
+            JobState::Ready => u.ready += 1,
+            JobState::Active => u.next_end = Some(u.next_end.map_or(j.end_date, |e| e.min(j.end_date))),
+            _ => {}
+        }
+    }
+    u
+}
+
+/// The Reactions skill: without it a character can't run reactions at all, whatever its base slot.
+pub const REACTIONS_SKILL: i64 = 45746;
+
+/// A character's slots per [`SlotKind::index`], from its skills; `None` until its skills have loaded.
+pub fn character_slots(c: &Character) -> Option<[i64; 3]> {
+    c.skills.as_ref()?;
+    let levels = crate::features::manufacturing::levels_of(c);
+    let (m, s, r) = crate::features::manufacturing::slots(&crate::blueprints::INDUSTRY, &levels);
+    let r = if levels.get(&REACTIONS_SKILL).copied().unwrap_or(0) > 0 { r } else { 0 };
+    Some([m, s, r])
+}
+
+// ---------- owned blueprints ----------
+
+/// What an owned blueprint is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BlueprintKind {
+    Original,
+    Copy,
+    /// A reaction formula (always an original: formulas can't be copied or researched).
+    Formula,
+}
+
+impl BlueprintKind {
+    pub const ALL: [BlueprintKind; 3] = [BlueprintKind::Original, BlueprintKind::Copy, BlueprintKind::Formula];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BlueprintKind::Original => "Original",
+            BlueprintKind::Copy => "Copy",
+            BlueprintKind::Formula => "Formula",
+        }
+    }
+}
+
+pub fn blueprint_kind(data: &IndustryData, b: &OwnedBlueprint) -> BlueprintKind {
+    if data.blueprint(b.type_id).is_some_and(|bp| bp.is_reaction()) {
+        BlueprintKind::Formula
+    } else if b.is_copy() {
+        BlueprintKind::Copy
+    } else {
+        BlueprintKind::Original
+    }
+}
+
+/// ME 10 and TE 20: research can't improve it further.
+pub fn fully_researched(me: i64, te: i64) -> bool {
+    me >= 10 && te >= 20
+}
+
+/// What a blueprint's product is, for filtering lists of blueprints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ProductCategory {
+    Ships,
+    Modules,
+    Charges,
+    Drones,
+    Subsystems,
+    Components,
+    Reactions,
+    Structures,
+    Implants,
+    Other,
+}
+
+impl ProductCategory {
+    pub const ALL: [ProductCategory; 10] = [
+        ProductCategory::Ships,
+        ProductCategory::Modules,
+        ProductCategory::Charges,
+        ProductCategory::Drones,
+        ProductCategory::Subsystems,
+        ProductCategory::Components,
+        ProductCategory::Reactions,
+        ProductCategory::Structures,
+        ProductCategory::Implants,
+        ProductCategory::Other,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ProductCategory::Ships => "Ships",
+            ProductCategory::Modules => "Modules",
+            ProductCategory::Charges => "Charges",
+            ProductCategory::Drones => "Drones & fighters",
+            ProductCategory::Subsystems => "Subsystems",
+            ProductCategory::Components => "Components",
+            ProductCategory::Reactions => "Reactions",
+            ProductCategory::Structures => "Structures & deployables",
+            ProductCategory::Implants => "Implants & boosters",
+            ProductCategory::Other => "Other",
+        }
+    }
+}
+
+/// The category of what `blueprint` makes (by the product's EVE category and group).
+pub fn product_category(data: &IndustryData, blueprint: i64) -> ProductCategory {
+    let Some(bp) = data.blueprint(blueprint) else { return ProductCategory::Other };
+    if bp.is_reaction() {
+        return ProductCategory::Reactions;
+    }
+    let Some((_, _, product)) = bp.output() else { return ProductCategory::Other };
+    let group = data.get_type(product.type_id).and_then(|t| data.group_name(t.group)).unwrap_or("");
+    match data.category_of(product.type_id) {
+        Some(6) => ProductCategory::Ships,
+        Some(7) => ProductCategory::Modules,
+        Some(8) => ProductCategory::Charges,
+        Some(18 | 87) => ProductCategory::Drones,
+        Some(32) => ProductCategory::Subsystems,
+        Some(20) => ProductCategory::Implants,
+        Some(22 | 23 | 39 | 40 | 46 | 65 | 66) => ProductCategory::Structures,
+        // Commodities hold the construction components and R.A.M. tools, but also mutaplasmids and filaments.
+        Some(17) if group.contains("Component") || group == "Tool" => ProductCategory::Components,
+        Some(4) if group == "Fuel Block" => ProductCategory::Components,
+        _ => ProductCategory::Other,
+    }
+}
+
+/// Tech level of a product, from its market meta group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TechLevel {
+    Tech1,
+    Tech2,
+    Tech3,
+    /// Faction, storyline, officer and the like.
+    Faction,
+}
+
+impl TechLevel {
+    pub const ALL: [TechLevel; 4] = [TechLevel::Tech1, TechLevel::Tech2, TechLevel::Tech3, TechLevel::Faction];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TechLevel::Tech1 => "Tech I",
+            TechLevel::Tech2 => "Tech II",
+            TechLevel::Tech3 => "Tech III",
+            TechLevel::Faction => "Faction",
+        }
+    }
+
+    pub fn short(self) -> &'static str {
+        match self {
+            TechLevel::Tech1 => "T1",
+            TechLevel::Tech2 => "T2",
+            TechLevel::Tech3 => "T3",
+            TechLevel::Faction => "Faction",
+        }
+    }
+}
+
+pub fn tech_level(product: i64) -> TechLevel {
+    match crate::sde::MARKET.get(product).and_then(|t| t.meta_group) {
+        None | Some(1) => TechLevel::Tech1,
+        Some(2) => TechLevel::Tech2,
+        Some(14) => TechLevel::Tech3,
+        Some(_) => TechLevel::Faction,
+    }
+}
+
+/// Identical blueprints of one character in one place, as one row: ESI lists every copy as its own item, so 50
+/// copies of the same print would otherwise be 50 rows. Originals already come stacked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlueprintStack {
+    pub character_id: i64,
+    pub type_id: i64,
+    pub kind: BlueprintKind,
+    pub me: i64,
+    pub te: i64,
+    /// Runs per copy; -1 for originals and formulas.
+    pub runs: i64,
+    pub location_id: i64,
+    pub location: Option<crate::universe::Place>,
+    pub name: String,
+    /// Blueprints in the stack.
+    pub quantity: i64,
+}
+
+impl BlueprintStack {
+    pub fn location_name(&self) -> String {
+        self.location.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "Unknown location".into())
+    }
+}
+
+/// Every character's blueprints, identical ones in the same place merged, sorted by name.
+pub fn blueprint_stacks(data: &IndustryData, characters: &[std::sync::Arc<Character>]) -> Vec<BlueprintStack> {
+    // (character, type, kind, ME, TE, runs, location) → index in `out`
+    type Key = (i64, i64, BlueprintKind, i64, i64, i64, i64);
+    let mut by: HashMap<Key, usize> = HashMap::new();
+    let mut out: Vec<BlueprintStack> = Vec::new();
+    for c in characters {
+        for b in c.blueprints.iter().flat_map(|d| &d.blueprints) {
+            let kind = blueprint_kind(data, b);
+            let runs = if kind == BlueprintKind::Copy { b.runs } else { -1 };
+            // the location's place id, so blueprints in different containers of one station merge
+            let location_id = b.location.as_ref().map_or(b.location_id, |p| p.id);
+            let key = (c.id, b.type_id, kind, b.material_efficiency, b.time_efficiency, runs, location_id);
+            match by.get(&key) {
+                Some(&i) => out[i].quantity += b.count(),
+                None => {
+                    by.insert(key, out.len());
+                    out.push(BlueprintStack {
+                        character_id: c.id,
+                        type_id: b.type_id,
+                        kind,
+                        me: b.material_efficiency,
+                        te: b.time_efficiency,
+                        runs,
+                        location_id,
+                        location: b.location.clone(),
+                        name: b.name(),
+                        quantity: b.count(),
+                    });
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name).then(a.kind.cmp(&b.kind)).then(b.me.cmp(&a.me)).then(a.character_id.cmp(&b.character_id)).then(b.runs.cmp(&a.runs)));
+    out
+}
+
+/// Who owns a blueprint type and the best research among them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OwnedSummary {
+    /// Character ids, in the order given.
+    pub characters: Vec<i64>,
+    pub originals: i64,
+    pub copies: i64,
+    /// Best (ME, TE) of any original or copy.
+    pub best: Option<(i64, i64)>,
+}
+
+pub fn owned_summary(characters: &[std::sync::Arc<Character>]) -> HashMap<i64, OwnedSummary> {
+    let mut out: HashMap<i64, OwnedSummary> = HashMap::new();
+    for c in characters {
+        for b in c.blueprints.iter().flat_map(|d| &d.blueprints) {
+            let s = out.entry(b.type_id).or_default();
+            if !s.characters.contains(&c.id) {
+                s.characters.push(c.id);
+            }
+            if b.is_copy() {
+                s.copies += 1;
+            } else {
+                s.originals += b.count();
+            }
+            let me_te = (b.material_efficiency, b.time_efficiency);
+            s.best = Some(s.best.map_or(me_te, |best| best.max(me_te)));
+        }
+    }
+    out
 }
 
 // ---------- planetary industry ----------
@@ -506,6 +824,86 @@ mod tests {
         assert_eq!(top.hits.len(), 2);
         assert_eq!(top.matches, 4);
         assert_eq!(top.hits[0].asset.name, "Orca");
+    }
+
+    #[test]
+    fn slots_in_use() {
+        let now = t("2026-01-01T12:00:00Z");
+        let mut jobs = vec![
+            job(1, "active", "2026-01-01T10:00:00Z", "2026-01-01T15:00:00Z"),
+            job(2, "active", "2026-01-01T10:00:00Z", "2026-01-01T11:00:00Z"),
+            job(3, "paused", "2026-01-01T10:00:00Z", "2026-01-01T13:00:00Z"),
+            job(4, "active", "2026-01-01T10:00:00Z", "2026-01-01T14:00:00Z"),
+            job(5, "delivered", "2026-01-01T10:00:00Z", "2026-01-01T11:00:00Z"),
+            job(6, "active", "2026-01-01T10:00:00Z", "2026-01-01T13:30:00Z"),
+        ];
+        jobs[2].activity_id = 8;
+        jobs[3].activity_id = 11;
+        jobs[5].activity_id = 4;
+        let u = slot_usage(&jobs, now);
+        assert_eq!(u.used, [2, 2, 1]);
+        assert_eq!(u.ready, 1);
+        assert_eq!(u.next_end, Some(t("2026-01-01T13:30:00Z")));
+        assert_eq!(slot_usage(&[], now), SlotUsage::default());
+        assert_eq!(SlotKind::of_activity(9), SlotKind::Reactions);
+        assert_eq!(SlotKind::of_activity(5), SlotKind::Science);
+
+        use crate::domains::skills::{Skill, SkillsData};
+        let skill = |id: i64, level: u8| Skill { skill_id: id, trained_skill_level: level, active_skill_level: level, ..Default::default() };
+        let mut c = Character::new(1);
+        assert_eq!(character_slots(&c), None);
+        // Mass Production V: 1 + 5 manufacturing slots; no Reactions skill, no reaction slot
+        c.skills = Some(SkillsData { skills: vec![skill(3387, 5)], ..Default::default() });
+        assert_eq!(character_slots(&c), Some([6, 1, 0]));
+        c.skills.as_mut().unwrap().skills.push(skill(REACTIONS_SKILL, 1));
+        assert_eq!(character_slots(&c).map(|s| s[2]), Some(1));
+    }
+
+    fn owned(item: i64, type_id: i64, quantity: i64, runs: i64, me: i64, location: i64) -> OwnedBlueprint {
+        OwnedBlueprint { item_id: item, type_id, location_id: location, material_efficiency: me, time_efficiency: 0, quantity, runs, ..Default::default() }
+    }
+
+    #[test]
+    fn owned_blueprints() {
+        let data = &*crate::blueprints::INDUSTRY;
+        let formula = data.maker(16672).unwrap().0.id;
+        let rifter = 691;
+        assert_eq!(product_category(data, rifter), ProductCategory::Ships);
+        assert_eq!(product_category(data, formula), ProductCategory::Reactions);
+        assert_eq!(product_category(data, -1), ProductCategory::Other);
+        assert_eq!(tech_level(587), TechLevel::Tech1);
+        assert!(fully_researched(10, 20) && !fully_researched(10, 18));
+
+        let mut a = Character::new(1);
+        a.blueprints = Some(crate::domains::industry::BlueprintsData {
+            blueprints: vec![
+                owned(1, rifter, 3, -1, 10, 100),
+                owned(2, rifter, -2, 10, 8, 100),
+                owned(3, rifter, -2, 10, 8, 100),
+                owned(4, rifter, -2, 5, 8, 100),
+                owned(5, formula, -1, -1, 0, 100),
+            ],
+        });
+        let mut b = Character::new(2);
+        b.blueprints = Some(crate::domains::industry::BlueprintsData { blueprints: vec![owned(6, rifter, -2, 10, 8, 100)] });
+        let chars = vec![Arc::new(a), Arc::new(b)];
+        assert_eq!(blueprint_kind(data, &chars[0].blueprints.as_ref().unwrap().blueprints[4]), BlueprintKind::Formula);
+
+        let stacks = blueprint_stacks(data, &chars);
+        let rows: Vec<(i64, BlueprintKind, i64, i64)> =
+            stacks.iter().filter(|s| s.type_id == rifter).map(|s| (s.character_id, s.kind, s.runs, s.quantity)).collect();
+        // the stack of 3 originals stays one row; the two identical copies merge; other runs and characters don't
+        assert_eq!(
+            rows,
+            vec![(1, BlueprintKind::Original, -1, 3), (1, BlueprintKind::Copy, 10, 2), (1, BlueprintKind::Copy, 5, 1), (2, BlueprintKind::Copy, 10, 1)]
+        );
+        assert_eq!(stacks.iter().filter(|s| s.kind == BlueprintKind::Formula).count(), 1);
+
+        let owners = owned_summary(&chars);
+        let r = &owners[&rifter];
+        assert_eq!(r.characters, vec![1, 2]);
+        assert_eq!((r.originals, r.copies), (3, 4));
+        assert_eq!(r.best, Some((10, 0)));
     }
 
     #[test]
