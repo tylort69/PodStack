@@ -205,12 +205,15 @@ impl Page {
     }
 }
 
+/// A callback the shell installs once the window exists.
+type Hook<F> = RefCell<Option<Box<F>>>;
+
 pub(crate) struct CtxInner {
     pub core: Arc<Core>,
     pub window: gtk::ApplicationWindow,
-    pub navigate: RefCell<Option<Box<dyn Fn(Route)>>>,
-    pub rebuild: RefCell<Option<Box<dyn Fn()>>>,
-    pub toast: RefCell<Option<Box<dyn Fn(&str)>>>,
+    pub navigate: Hook<dyn Fn(Route)>,
+    pub rebuild: Hook<dyn Fn()>,
+    pub toast: Hook<dyn Fn(&str)>,
     pub route: RefCell<Route>,
     pub memory: RefCell<std::collections::HashMap<String, String>>,
 }

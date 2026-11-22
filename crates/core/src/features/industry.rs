@@ -466,13 +466,12 @@ mod tests {
     }
 
     fn assets() -> AssetsData {
-        let mut d = AssetsData::default();
-        d.items = vec![
+        let mut d = AssetsData { items: vec![
             asset(1, "Orca", None, 60003760, 1, 1e9),
             asset(2, "Tritanium", Some(1), 60003760, 1000, 4.0),
             asset(3, "Rifter", None, 30000142, 1, 5e5),
             asset(4, "Veldspar", None, 60008494, 10, 1.0),
-        ];
+        ], ..Default::default() };
         d.items[0].custom_name = Some("Mothership".into());
         d.locations.insert(60003760, Place { id: 60003760, name: "Jita IV - Moon 4".into(), ..Default::default() });
         d.locations.insert(30000142, Place { id: 30000142, name: "Jita".into(), ..Default::default() });

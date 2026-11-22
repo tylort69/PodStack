@@ -25,10 +25,12 @@ struct Col<T> {
     sort: Option<SortFn<T>>,
 }
 
+type RowAction<T> = Rc<dyn Fn(&T)>;
+
 pub struct Table<T: 'static> {
     rows: Rc<Vec<T>>,
     cols: Vec<Col<T>>,
-    on_activate: Option<Rc<dyn Fn(&T)>>,
+    on_activate: Option<RowAction<T>>,
     own_scroll: bool,
     min_height: Option<i32>,
     initial_sort: Option<(usize, bool)>,
