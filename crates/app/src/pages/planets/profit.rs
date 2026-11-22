@@ -125,6 +125,7 @@ fn products_table(ctx: &Ctx, rows: Vec<Row>) -> gtk::Widget {
         .widget_sorted("Profit/h", |r| money_cell(r.profit()), by_profit)
         .num("Margin", |r| r.margin().map(|m| format!("{:.1}%", m * 100.0)).unwrap_or_else(|| "—".into()), |r| r.margin().unwrap_or(f64::MIN))
         .sort_by(7, true)
+        .min_height(420)
         .max_height(560)
         .on_activate(move |r| open(&ctx, r.type_id))
         .build()

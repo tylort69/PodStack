@@ -470,6 +470,7 @@ fn characters_table(ctx: &Ctx, characters: &[Arc<Character>], pis: &[PiCharacter
                 key(a).cmp(&key(b))
             },
         )
+        .min_height(120)
         .max_height(320)
         .on_activate(move |r| {
             if show_character {
@@ -673,7 +674,24 @@ fn colony_card(ctx: &Ctx, e: &Entry, prices: Option<&HashMap<i64, f64>>, s: &PiS
         update();
         w::ticker(&card, TICK, update);
     }
+    show_short_labels(card.upcast_ref());
     card
+}
+
+/// Short labels (section titles, numbers, countdowns, facts) show in full: in a wrapping FlowBox the cards can be
+/// measured narrower than they end up, and these would ellipsize to "6,0…" despite the room. Labels that stretch
+/// (names) keep ellipsizing.
+fn show_short_labels(w: &gtk::Widget) {
+    if let Some(l) = w.downcast_ref::<gtk::Label>() {
+        if !l.hexpands() && !l.wraps() {
+            l.set_ellipsize(gtk::pango::EllipsizeMode::None);
+        }
+    }
+    let mut c = w.first_child();
+    while let Some(child) = c {
+        show_short_labels(&child);
+        c = child.next_sibling();
+    }
 }
 
 /// An extractor: product, rate, countdown and progress. Returns the countdown label and bar for the ticker.
