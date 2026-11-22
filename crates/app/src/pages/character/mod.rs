@@ -141,6 +141,7 @@ fn header(ctx: &Ctx, c: &Character) -> gtk::Widget {
     };
     let tl = w::line(&training, &["title-medium"]);
     tl.set_max_width_chars(28);
+    tl.set_width_chars(12);
     stats.append(&stat("Training", &tl, sub));
     card.append(&stats);
 
@@ -201,11 +202,22 @@ fn header(ctx: &Ctx, c: &Character) -> gtk::Widget {
 }
 
 fn stat(label: &str, value: &gtk::Label, sub: Option<String>) -> gtk::Box {
+    // Numbers and captions are short: keep them whole rather than letting the header squeeze them to "Skill poin…".
+    let whole = |l: &gtk::Label| {
+        if l.max_width_chars() < 0 {
+            l.set_ellipsize(gtk::pango::EllipsizeMode::None);
+        }
+    };
     let b = w::vbox(2);
-    b.append(&w::line(label, &["label-medium", "dim"]));
+    let caption = w::line(label, &["label-medium", "dim"]);
+    whole(&caption);
+    b.append(&caption);
+    whole(value);
     b.append(value);
     if let Some(s) = sub {
-        b.append(&w::line(&s, &["body-small", "dim"]));
+        let l = w::line(&s, &["body-small", "dim"]);
+        whole(&l);
+        b.append(&l);
     }
     b
 }
@@ -213,12 +225,25 @@ fn stat(label: &str, value: &gtk::Label, sub: Option<String>) -> gtk::Box {
 fn tab_bar(ctx: &Ctx, id: i64, current: CharTab) -> gtk::Widget {
     let tabs = w::hbox(0);
     tabs.add_css_class("m3-tabs");
+    let character = ctx.core().character(id);
+    let unread = |tab: CharTab| -> usize {
+        let Some(c) = character.as_deref() else { return 0 };
+        match tab {
+            CharTab::Mail => podstack_core::features::comms::unread_mail_count(c),
+            CharTab::Notifications => podstack_core::features::character_extras::unread_notification_count(c),
+            _ => 0,
+        }
+    };
     for tab in CharTab::ALL {
         let b = gtk::ToggleButton::new();
         b.add_css_class("m3-tab");
         let row = w::hbox(6);
         row.append(&w::icon_sized(tab.icon(), 18));
         row.append(&gtk::Label::new(Some(tab.label())));
+        let n = unread(tab);
+        if n > 0 {
+            row.append(&w::badge(n.min(u32::MAX as usize) as u32));
+        }
         b.set_child(Some(&row));
         b.set_active(tab == current);
         let ctx = ctx.clone();

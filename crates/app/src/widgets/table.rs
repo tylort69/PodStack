@@ -25,10 +25,12 @@ struct Col<T> {
     sort: Option<SortFn<T>>,
 }
 
+type RowAction<T> = Rc<dyn Fn(&T)>;
+
 pub struct Table<T: 'static> {
     rows: Rc<Vec<T>>,
     cols: Vec<Col<T>>,
-    on_activate: Option<Rc<dyn Fn(&T)>>,
+    on_activate: Option<RowAction<T>>,
     own_scroll: bool,
     min_height: Option<i32>,
     initial_sort: Option<(usize, bool)>,
@@ -184,16 +186,18 @@ impl<T: 'static> Table<T> {
             columns.push(c);
         }
 
-        let sort_model = gtk::SortListModel::new(Some(store), cv.sorter());
-        let selection = gtk::SingleSelection::new(Some(sort_model));
-        selection.set_autoselect(false);
-        selection.set_can_unselect(true);
-        cv.set_model(Some(&selection));
+        // Sort before the model is attached: sorting afterwards keeps the old first row in view, so the table
+        // would open scrolled partway down.
         if let Some((i, desc)) = self.initial_sort {
             if let Some(c) = columns.get(i) {
                 cv.sort_by_column(Some(c), if desc { gtk::SortType::Descending } else { gtk::SortType::Ascending });
             }
         }
+        let sort_model = gtk::SortListModel::new(Some(store), cv.sorter());
+        let selection = gtk::SingleSelection::new(Some(sort_model));
+        selection.set_autoselect(false);
+        selection.set_can_unselect(true);
+        cv.set_model(Some(&selection));
         if let Some(f) = self.on_activate.clone() {
             let rows = self.rows.clone();
             cv.connect_activate(move |cv, pos| {

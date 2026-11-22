@@ -1,7 +1,7 @@
 //! The main window: Material navigation drawer, top app bar, page area and snackbar.
 //! Pages are rebuilt when their data changes (see [`Page::live`]), keeping the scroll position.
 
-use crate::ctx::{Ctx, CtxInner, Page, Route};
+use crate::ctx::{CharTab, Ctx, CtxInner, Page, Route};
 use crate::widgets::{self as w, Btn};
 use crate::{login, pages, services};
 use gtk::{gdk, glib, prelude::*};
@@ -57,6 +57,10 @@ pub fn build(app: &gtk::Application, core: Arc<Core>) -> gtk::ApplicationWindow 
     drawer.set_transition_type(gtk::RevealerTransitionType::SlideRight);
     drawer.set_child(Some(&drawer_scroll));
     drawer.set_reveal_child(true);
+    // Keep the drawer at its own width: an expanding widget inside it would otherwise make it share the window's
+    // extra width with the page.
+    drawer.set_hexpand(false);
+    drawer_scroll.set_hexpand(false);
 
     // top app bar
     let bar = w::hbox(8);
@@ -226,10 +230,26 @@ pub fn build(app: &gtk::Application, core: Arc<Core>) -> gtk::ApplicationWindow 
     }
 
     shell.rebuild_drawer();
-    shell.navigate(Route::Overview, false);
+    let start = std::env::var("PODSTACK_START_ROUTE").ok().and_then(|r| Route::parse(&r)).unwrap_or(Route::Overview);
+    shell.navigate(start, false);
     if core.characters().is_empty() {
         let ctx = ctx.clone();
         glib::idle_add_local_once(move || login::show(&ctx));
+    }
+
+    // Notifications and the tray menu open a character through this action.
+    {
+        let action = gtk::gio::SimpleAction::new("open-character", Some(glib::VariantTy::INT64));
+        let weak = Rc::downgrade(&shell);
+        let win = window.clone();
+        action.connect_activate(move |_, param| {
+            win.set_visible(true);
+            win.present();
+            if let (Some(s), Some(id)) = (weak.upgrade(), param.and_then(|p| p.get::<i64>())) {
+                s.navigate(Route::Character(id, CharTab::Summary), true);
+            }
+        });
+        app.add_action(&action);
     }
 
     services::alerts::start(core.clone());

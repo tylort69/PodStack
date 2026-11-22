@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=PodStack
+GenericName=EVE Online Character Manager
+Comment=Monitor your EVE Online characters: skills, plans, SP farms, assets and more
+Exec=podstack
+Icon=io.github.tylort69.PodStack
+Terminal=false
+Categories=Game;Utility;
+Keywords=EVE;EVE Online;skills;ESI;
+StartupNotify=true
+StartupWMClass=io.github.tylort69.PodStack

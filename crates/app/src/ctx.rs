@@ -133,6 +133,24 @@ impl Route {
         (Route::Planets, "Planetary Industry", "public"),
     ];
 
+    /// Parses a route for `PODSTACK_START_ROUTE` (for UI testing): a destination label ("SP Farming", "Settings",
+    /// "About") or "<character id>/<tab label>" ("90000001/Plans"). Case and spaces don't matter.
+    pub fn parse(s: &str) -> Option<Route> {
+        let norm = |x: &str| x.to_lowercase().replace(' ', "");
+        let s = norm(s);
+        if let Some((id, tab)) = s.split_once('/') {
+            let id = id.parse().ok()?;
+            let tab = CharTab::ALL.into_iter().find(|t| norm(t.label()) == tab)?;
+            return Some(Route::Character(id, tab));
+        }
+        Route::DESTINATIONS
+            .iter()
+            .map(|(r, label, _)| (*r, *label))
+            .chain([(Route::Settings, "Settings"), (Route::About, "About")])
+            .find(|(_, label)| norm(label) == s)
+            .map(|(r, _)| r)
+    }
+
     /// Whether data about character `id` changing affects this page.
     pub fn shows_character(&self, id: i64) -> bool {
         match self {
@@ -187,12 +205,15 @@ impl Page {
     }
 }
 
+/// A callback the shell installs once the window exists.
+type Hook<F> = RefCell<Option<Box<F>>>;
+
 pub(crate) struct CtxInner {
     pub core: Arc<Core>,
     pub window: gtk::ApplicationWindow,
-    pub navigate: RefCell<Option<Box<dyn Fn(Route)>>>,
-    pub rebuild: RefCell<Option<Box<dyn Fn()>>>,
-    pub toast: RefCell<Option<Box<dyn Fn(&str)>>>,
+    pub navigate: Hook<dyn Fn(Route)>,
+    pub rebuild: Hook<dyn Fn()>,
+    pub toast: Hook<dyn Fn(&str)>,
     pub route: RefCell<Route>,
     pub memory: RefCell<std::collections::HashMap<String, String>>,
 }

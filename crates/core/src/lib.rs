@@ -373,6 +373,9 @@ impl Core {
                 }
             }
         }
+        // Accelerator detection compares attributes and training speed between refreshes, so it runs right after
+        // each one rather than only when a page shows it.
+        features::plan_tools::accelerator::refresh(self, id);
         self.refreshing.lock().remove(&id);
         self.emit(Event::RefreshProgress { id, done: total, total });
         self.flush();
