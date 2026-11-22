@@ -213,12 +213,25 @@ fn stat(label: &str, value: &gtk::Label, sub: Option<String>) -> gtk::Box {
 fn tab_bar(ctx: &Ctx, id: i64, current: CharTab) -> gtk::Widget {
     let tabs = w::hbox(0);
     tabs.add_css_class("m3-tabs");
+    let character = ctx.core().character(id);
+    let unread = |tab: CharTab| -> usize {
+        let Some(c) = character.as_deref() else { return 0 };
+        match tab {
+            CharTab::Mail => podstack_core::features::comms::unread_mail_count(c),
+            CharTab::Notifications => podstack_core::features::character_extras::unread_notification_count(c),
+            _ => 0,
+        }
+    };
     for tab in CharTab::ALL {
         let b = gtk::ToggleButton::new();
         b.add_css_class("m3-tab");
         let row = w::hbox(6);
         row.append(&w::icon_sized(tab.icon(), 18));
         row.append(&gtk::Label::new(Some(tab.label())));
+        let n = unread(tab);
+        if n > 0 {
+            row.append(&w::badge(n.min(u32::MAX as usize) as u32));
+        }
         b.set_child(Some(&row));
         b.set_active(tab == current);
         let ctx = ctx.clone();
