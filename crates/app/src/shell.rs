@@ -55,7 +55,15 @@ pub fn build(app: &gtk::Application, core: Arc<Core>) -> gtk::ApplicationWindow 
     drawer_scroll.set_size_request(280, -1);
     let drawer = gtk::Revealer::new();
     drawer.set_transition_type(gtk::RevealerTransitionType::SlideRight);
-    drawer.set_child(Some(&drawer_scroll));
+    // Tranquility status sits under the scrolling list, outside the part that's rebuilt when data changes, so it
+    // polls ESI once a minute instead of on every rebuild.
+    drawer_scroll.set_vexpand(true);
+    let status = pages::about::server_status_widget(&ctx);
+    status.add_css_class("nav-status");
+    let drawer_col = w::vbox(0);
+    drawer_col.append(&drawer_scroll);
+    drawer_col.append(&status);
+    drawer.set_child(Some(&drawer_col));
     drawer.set_reveal_child(true);
     // Keep the drawer at its own width: an expanding widget inside it would otherwise make it share the window's
     // extra width with the page.

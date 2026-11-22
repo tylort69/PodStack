@@ -253,6 +253,7 @@ window.m3-dialog > .dialog-surface { padding: 24px; }
 
 /* ---------- navigation drawer ---------- */
 .nav-drawer { background-color: @surface_container_low; padding: 12px; min-width: 280px; }
+.nav-status { background-color: @surface_container_low; padding: 10px 28px 16px 28px; border-top: 1px solid @outline_variant; }
 .nav-drawer .app-title { padding: 12px 16px 16px 16px; }
 .nav-section-label { color: @on_surface_variant; font-size: 14px; font-weight: 500; padding: 18px 16px 8px 16px; }
 button.nav-item {

@@ -199,10 +199,6 @@ impl Page {
         self.actions.push(w.upcast());
         self
     }
-    /// Placeholder for a page that isn't built yet.
-    pub fn todo(title: &str) -> Self {
-        Page::new(title, crate::widgets::empty_state("construction", title, "This page hasn't been built yet."))
-    }
 }
 
 /// A callback the shell installs once the window exists.
@@ -242,6 +238,7 @@ impl Ctx {
     }
 
     /// Rebuilds the current page now.
+    #[allow(dead_code)] // for static pages that want a full rebuild after an action
     pub fn rebuild(&self) {
         if let Some(f) = self.0.rebuild.borrow().as_ref() {
             f();

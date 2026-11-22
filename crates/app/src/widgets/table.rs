@@ -124,6 +124,7 @@ impl<T: 'static> Table<T> {
         self
     }
 
+    #[allow(dead_code)] // builder option kept for tables that shouldn't collapse when short
     pub fn min_height(mut self, px: i32) -> Self {
         self.min_height = Some(px);
         self

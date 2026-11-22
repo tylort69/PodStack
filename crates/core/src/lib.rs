@@ -265,6 +265,8 @@ impl Core {
         self.dirty.lock().remove(&id);
         let _ = std::fs::remove_file(character_path(id));
         features::plans::delete_all_for(self, id);
+        features::farming::remove(self, id);
+        features::accounts::forget_character(self, id);
         self.emit(Event::CharactersChanged);
     }
 

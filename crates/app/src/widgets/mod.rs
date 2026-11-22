@@ -69,19 +69,14 @@ pub fn markup(m: &str, classes: &[&str]) -> gtk::Label {
     l
 }
 
-/// A section heading inside a page.
-pub fn section(t: &str) -> gtk::Label {
-    let l = text(t, &["title-medium"]);
-    l.set_margin_top(8);
-    l
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Btn {
     Filled,
     Tonal,
     Outlined,
     Text,
+    // Part of the M3 button set (documented in CLAUDE.md) though no page uses it yet.
+    #[allow(dead_code)]
     Elevated,
     Danger,
     DangerFilled,
@@ -133,10 +128,6 @@ pub fn icon_button(icon_name: &str, tooltip: &str) -> gtk::Button {
     b.set_tooltip_text(Some(tooltip));
     b.set_valign(gtk::Align::Center);
     b
-}
-
-pub fn on_click(b: &gtk::Button, f: impl Fn() + 'static) {
-    b.connect_clicked(move |_| f());
 }
 
 /// An elevated card.

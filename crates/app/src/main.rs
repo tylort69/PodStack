@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! PodStack: an EVE Online character manager for Linux, built with GTK4 and Material You.
 
 mod ctx;
