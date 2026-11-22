@@ -1,0 +1,55 @@
+# Maintainer: tylort69 <28652424+tylort69@users.noreply.github.com>
+pkgname=podstack-git
+_pkgname=PodStack
+pkgver=0.3.0
+pkgrel=1
+pkgdesc="EVE Online character manager for Linux (GTK4, Material You)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/tylort69/PodStack"
+license=('AGPL-3.0-only')
+depends=('gtk4' 'glib2' 'pango' 'cairo' 'gdk-pixbuf2' 'hicolor-icon-theme')
+makedepends=('cargo' 'git' 'clang' 'cmake')
+optdepends=(
+  'matugen: Material You colors from your wallpaper'
+  'hyprpaper: wallpaper detection for matugen theming'
+  'swww: wallpaper detection for matugen theming'
+  'notification-daemon: desktop alerts (mako, dunst, swaync, …)'
+  'waybar: tray icon (StatusNotifierItem)'
+)
+provides=('podstack')
+conflicts=('podstack')
+source=("git+${url}.git#branch=rust-rewrite")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_pkgname"
+  printf "%s.r%s.g%s" "$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd "$_pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$_pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release -p podstack
+}
+
+check() {
+  cd "$_pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --release --workspace
+}
+
+package() {
+  cd "$_pkgname"
+  install -Dm755 target/release/podstack "$pkgdir/usr/bin/podstack"
+  install -Dm644 packaging/io.github.tylort69.PodStack.desktop "$pkgdir/usr/share/applications/io.github.tylort69.PodStack.desktop"
+  install -Dm644 assets/icon.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/io.github.tylort69.PodStack.png"
+  install -Dm644 LICENSE.md "$pkgdir/usr/share/licenses/$pkgname/LICENSE.md"
+  install -Dm644 assets/fonts/LICENSES.md "$pkgdir/usr/share/licenses/$pkgname/FONTS.md"
+}
