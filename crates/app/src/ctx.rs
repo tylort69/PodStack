@@ -129,7 +129,7 @@ impl Route {
         (Route::Contracts, "Contracts", "assignment"),
         (Route::AssetSearch, "Asset Search", "manage_search"),
         (Route::Market, "Market", "storefront"),
-        (Route::Industry, "Industry Jobs", "precision_manufacturing"),
+        (Route::Industry, "Industry", "precision_manufacturing"),
         (Route::Planets, "Planetary Industry", "public"),
     ];
 

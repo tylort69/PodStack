@@ -5,6 +5,7 @@
 //! listens to [`Core::subscribe`] for [`Event`]s to redraw. All async functions run on a Tokio runtime.
 
 pub mod auth;
+pub mod blueprints;
 pub mod character;
 pub mod config;
 pub mod domains;
@@ -14,6 +15,7 @@ pub mod fmt;
 pub mod market;
 pub mod sde;
 pub mod sso;
+pub mod static_data;
 pub mod store;
 pub mod training;
 pub mod universe;
@@ -396,8 +398,44 @@ impl Core {
         self.universe.flush();
     }
 
+    /// Downloads CCP's newest static data if there is a newer build (`force`: ask CCP even if it was asked
+    /// recently). Pages showing static data rebuild on `Event::Doc("sde")`.
+    pub async fn update_static_data(&self, force: bool) -> Option<i64> {
+        match static_data::update(force).await {
+            Ok(Some(build)) => {
+                self.emit(Event::Doc("sde".into()));
+                if force {
+                    self.emit(Event::Toast(format!("Game data updated to CCP build {build}")));
+                }
+                Some(build)
+            }
+            Ok(None) => {
+                if force {
+                    self.emit(Event::Toast("Game data is up to date".into()));
+                }
+                None
+            }
+            Err(err) => {
+                tracing::warn!("static data update: {err}");
+                if force {
+                    self.emit(Event::Toast(format!("Couldn't update game data: {err}")));
+                }
+                None
+            }
+        }
+    }
+
     /// Starts the background refresher and periodic saving. Must be called inside a Tokio runtime.
     pub fn start(self: &Arc<Self>) {
+        // CCP's static data: checks for a newer build now and then every hour (update() itself only asks CCP every
+        // few hours).
+        let core = self.clone();
+        tokio::spawn(async move {
+            loop {
+                core.update_static_data(false).await;
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            }
+        });
         let core = self.clone();
         tokio::spawn(async move {
             let sem = Arc::new(tokio::sync::Semaphore::new(CHARACTERS_AT_ONCE));

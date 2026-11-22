@@ -33,6 +33,8 @@ struct Entry {
 #[derive(Default, Serialize, Deserialize)]
 struct Cache {
     averages: Option<(DateTime<Utc>, HashMap<i64, f64>)>,
+    #[serde(default)]
+    adjusted: Option<(DateTime<Utc>, HashMap<i64, f64>)>,
     /// "region" or "region:location" -> type -> lowest sell
     sell: HashMap<String, HashMap<i64, Entry>>,
 }
@@ -41,6 +43,7 @@ pub struct Market {
     cache: Mutex<Cache>,
     books: Mutex<Fetched<BookOrder>>,
     histories: Mutex<Fetched<HistoryDay>>,
+    indices: Mutex<Option<(Instant, Arc<CostIndices>)>>,
 }
 
 /// (region, type) → when it was fetched, and what.
@@ -108,7 +111,29 @@ struct RawPrice {
     type_id: i64,
     #[serde(default)]
     average_price: Option<f64>,
+    /// CCP's estimate used for industry job costs (the "estimated item value" of a job sums these).
+    #[serde(default)]
+    adjusted_price: Option<f64>,
 }
+
+/// A solar system's industry cost indices, by activity name ("manufacturing", "reaction", "invention", "copying",
+/// "researching_material_efficiency", "researching_time_efficiency").
+pub type CostIndices = HashMap<i64, HashMap<String, f64>>;
+
+#[derive(Deserialize)]
+struct RawSystemIndices {
+    solar_system_id: i64,
+    cost_indices: Vec<RawIndex>,
+}
+
+#[derive(Deserialize)]
+struct RawIndex {
+    activity: String,
+    cost_index: f64,
+}
+
+/// ESI recalculates cost indices hourly.
+const INDEX_MAX_AGE: StdDuration = StdDuration::from_secs(3600);
 
 /// Highest buy and lowest sell among some orders.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -143,6 +168,7 @@ impl Market {
             cache: Mutex::new(store::read_json(&path()).unwrap_or_default()),
             books: Mutex::new(HashMap::new()),
             histories: Mutex::new(HashMap::new()),
+            indices: Mutex::new(None),
         }
     }
 
@@ -160,8 +186,13 @@ impl Market {
         }
         match esi.get("markets/prices").json::<Vec<RawPrice>>().await {
             Ok(list) => {
-                let prices: HashMap<i64, f64> = list.into_iter().filter_map(|p| p.average_price.map(|a| (p.type_id, a))).collect();
-                self.cache.lock().averages = Some((Utc::now(), prices.clone()));
+                let prices: HashMap<i64, f64> = list.iter().filter_map(|p| p.average_price.map(|a| (p.type_id, a))).collect();
+                let adjusted: HashMap<i64, f64> = list.iter().filter_map(|p| p.adjusted_price.map(|a| (p.type_id, a))).collect();
+                {
+                    let mut c = self.cache.lock();
+                    c.averages = Some((Utc::now(), prices.clone()));
+                    c.adjusted = Some((Utc::now(), adjusted));
+                }
                 self.save();
                 prices
             }
@@ -170,6 +201,37 @@ impl Market {
                 self.cache.lock().averages.as_ref().map(|(_, p)| p.clone()).unwrap_or_default()
             }
         }
+    }
+
+    /// CCP's adjusted price of every type (what industry job costs are based on), from the same request as
+    /// `average_prices`.
+    pub async fn adjusted_prices(&self, esi: &Esi) -> HashMap<i64, f64> {
+        if let Some((d, p)) = &self.cache.lock().adjusted {
+            if fresh(*d) {
+                return p.clone();
+            }
+        }
+        // average_prices refreshes both
+        self.cache.lock().averages = None;
+        self.average_prices(esi).await;
+        self.cache.lock().adjusted.as_ref().map(|(_, p)| p.clone()).unwrap_or_default()
+    }
+
+    /// Every system's industry cost indices (kept for an hour).
+    pub async fn cost_indices(&self, esi: &Esi, force: bool) -> Result<Arc<CostIndices>, EsiError> {
+        if let Some((at, v)) = &*self.indices.lock() {
+            if !force && at.elapsed() < INDEX_MAX_AGE {
+                return Ok(v.clone());
+            }
+        }
+        let list: Vec<RawSystemIndices> = esi.get("industry/systems").json().await?;
+        let map: CostIndices = list
+            .into_iter()
+            .map(|s| (s.solar_system_id, s.cost_indices.into_iter().map(|i| (i.activity, i.cost_index)).collect()))
+            .collect();
+        let map = Arc::new(map);
+        *self.indices.lock() = Some((Instant::now(), map.clone()));
+        Ok(map)
     }
 
     /// Lowest sell order per type in a region (or only at `location`), `None` where nobody sells.

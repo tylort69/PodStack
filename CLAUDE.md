@@ -15,7 +15,12 @@ for reference: port behaviour from it, but don't edit it. The 3D ship viewer is 
   rebuilds), `ctx.rs` (`Ctx`, `Route`, `CharTab`, `Page`), `widgets/` (Material 3 components and `Table`),
   `theme/` (matugen / faction / custom color schemes → stylesheet), `pages/` (one module per destination;
   `pages/character/` per tab), `services/` (alerts, tray), `login.rs`, `images.rs`, `rt.rs`.
-- `data/`: static data JSON converted from `legacy/resources` by `tools/convert_legacy_data.py`.
+- `data/`: static data JSON. `skills.json`, `ships.json` and friends come from `legacy/resources`
+  (`tools/convert_legacy_data.py`). `market_types.json`, `market_groups.json`, `universe.json` and `industry.json`
+  are a snapshot of CCP's static data export (`cargo run -p podstack-core --example convert_sde -- <unzipped SDE>`);
+  at runtime `static_data.rs` downloads newer CCP builds by itself and swaps them in (`Live<T>` statics:
+  `sde::MARKET`, `sde::MAP`, `blueprints::INDUSTRY`). Don't hard-code game numbers that the SDE or ESI carries;
+  rules only in patch notes go in `features::manufacturing::Rules` (user-editable).
 - `assets/`: icon, fonts (Inter, Material Icons, as TTF: HarfBuzz can't shape WOFF2).
 
 ## How data flows

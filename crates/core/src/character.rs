@@ -94,6 +94,8 @@ pub struct Character {
     pub industry: Option<industry::IndustryData>,
     #[serde(default)]
     pub planets: Option<industry::PlanetsData>,
+    #[serde(default)]
+    pub blueprints: Option<industry::BlueprintsData>,
 }
 
 /// Every injector extracts 500k SP.

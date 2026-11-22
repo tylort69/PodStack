@@ -52,6 +52,7 @@ pub const SCOPES: &[ScopeInfo] = &[
     ScopeInfo { name: "esi-contracts.read_character_contracts.v1", description: "Read Contracts" },
     ScopeInfo { name: "esi-assets.read_assets.v1", description: "Read Assets" },
     ScopeInfo { name: "esi-industry.read_character_jobs.v1", description: "Read Industry Jobs" },
+    ScopeInfo { name: "esi-characters.read_blueprints.v1", description: "Read Blueprints" },
     ScopeInfo { name: "esi-planets.manage_planets.v1", description: "Read Planetary Colonies" },
     ScopeInfo { name: "esi-markets.read_character_orders.v1", description: "Read Market Orders" },
     ScopeInfo { name: "esi-characters.read_standings.v1", description: "Read Standings" },

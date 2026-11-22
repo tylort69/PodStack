@@ -1,4 +1,4 @@
-//! Industry Jobs: every character's unfinished jobs, with headline counts, a status filter and live countdowns.
+//! Industry → Jobs: every character's unfinished jobs, with headline counts, a status filter and live countdowns.
 //! The character tab (`pages/character/industry.rs`) shows the same view for one character.
 //!
 //! Also home to small cell builders the asset and PI pages share (type cells, character cells, debouncing).
@@ -22,6 +22,7 @@ const FILTERS: [&str; 4] = ["All", "In progress", "Ready", "Paused"];
 pub fn build(ctx: &Ctx) -> Page {
     let body = w::page_body();
     body.set_vexpand(true);
+    body.append(&super::tab_bar(ctx, super::Tab::Jobs));
     let chars = ctx.core().characters();
     let no_scope = chars.iter().filter(|c| scope_failed(c, "industry_jobs")).count();
     let not_loaded = chars.iter().filter(|c| c.industry.is_none()).count() - no_scope;
@@ -36,7 +37,7 @@ pub fn build(ctx: &Ctx) -> Page {
         body.append(&w::banner("hourglass_empty", &format!("{not_loaded} character(s) haven't loaded industry jobs yet."), w::BannerKind::Info));
     }
     body.append(&jobs_view(ctx, &chars, true, "industry"));
-    Page::new("Industry Jobs", body).no_scroll()
+    Page::new("Industry", body).no_scroll()
 }
 
 /// Jobs ready to deliver, across all characters.

@@ -28,4 +28,5 @@ pub mod alerts;
 pub mod backup;
 
 // Market browser, order competition, trade profits and appraisal (`trade`).
+pub mod manufacturing;
 pub mod trade;

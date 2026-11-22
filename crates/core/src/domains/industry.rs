@@ -15,7 +15,11 @@ pub const DOMAINS: &[DomainSpec] = &[
     // ESI caches jobs for 5 minutes and colonies for 10; PodStack's intervals follow the legacy app's.
     domain!("industry_jobs", "Industry Jobs", 900, refresh_jobs),
     domain!("planets", "Planetary Colonies", 1800, refresh_planets),
+    // ESI caches blueprints for an hour.
+    domain!("blueprints", "Blueprints", 3600, refresh_blueprints),
 ];
+
+pub const BLUEPRINTS_SCOPE: &str = "esi-characters.read_blueprints.v1";
 
 pub const JOBS_SCOPE: &str = "esi-industry.read_character_jobs.v1";
 pub const PLANETS_SCOPE: &str = "esi-planets.manage_planets.v1";
@@ -187,7 +191,70 @@ pub struct PlanetsData {
     pub colonies: Vec<Colony>,
 }
 
+/// One of `characters/{id}/blueprints`, plus resolved names.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct OwnedBlueprint {
+    pub item_id: i64,
+    pub type_id: i64,
+    pub location_id: i64,
+    #[serde(default)]
+    pub location_flag: String,
+    pub material_efficiency: i64,
+    pub time_efficiency: i64,
+    /// -1 an original, -2 a copy, otherwise a stack of that many originals.
+    pub quantity: i64,
+    /// Runs left on a copy; -1 for originals.
+    pub runs: i64,
+    #[serde(default)]
+    pub type_name: Option<String>,
+    /// The station or structure it's in (through any containers), when known.
+    #[serde(default)]
+    pub location: Option<Place>,
+}
+
+impl OwnedBlueprint {
+    pub fn is_copy(&self) -> bool {
+        self.quantity == -2
+    }
+    /// How many blueprints this entry stands for (a stack of originals counts each).
+    pub fn count(&self) -> i64 {
+        self.quantity.max(1)
+    }
+    pub fn name(&self) -> String {
+        self.type_name.clone().unwrap_or_else(|| crate::blueprints::INDUSTRY.type_name(self.type_id))
+    }
+    pub fn location_name(&self) -> String {
+        self.location.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "Unknown location".into())
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct BlueprintsData {
+    pub blueprints: Vec<OwnedBlueprint>,
+}
+
 // ---------- fetching ----------
+
+async fn refresh_blueprints(cx: &Cx) -> DomainResult {
+    let mut list: Vec<OwnedBlueprint> = cx.get(cx.char_path("blueprints")).scope(BLUEPRINTS_SCOPE).all_pages().await?;
+    // Blueprints inside containers name the container as their location; the character's assets know which station
+    // or structure the outermost container is in.
+    let roots_of: HashMap<i64, i64> =
+        cx.prev.assets.as_ref().map(|a| a.items.iter().map(|i| (i.item_id, i.root_location_id)).collect()).unwrap_or_default();
+    let root = |id: i64| roots_of.get(&id).copied().unwrap_or(id);
+    let roots: Vec<i64> = list.iter().map(|b| root(b.location_id)).collect();
+    let mut place_ids: Vec<i64> = roots.clone();
+    place_ids.sort();
+    place_ids.dedup();
+    let places = cx.universe().places(cx.esi(), place_ids, Some(&cx.auth)).await;
+    let names = cx.universe().names(cx.esi(), list.iter().map(|b| b.type_id).collect::<Vec<_>>()).await;
+    for (b, r) in list.iter_mut().zip(roots) {
+        b.type_name = names.get(&b.type_id).cloned();
+        b.location = places.get(&r).cloned();
+    }
+    let data = BlueprintsData { blueprints: list };
+    Ok(Box::new(move |c| c.blueprints = Some(data)))
+}
 
 async fn refresh_jobs(cx: &Cx) -> DomainResult {
     let mut jobs: Vec<Job> = cx.get(cx.char_path("industry/jobs")).scope(JOBS_SCOPE).json().await?;

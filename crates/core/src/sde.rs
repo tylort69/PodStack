@@ -4,6 +4,7 @@
 
 use serde::Deserialize;
 use std::collections::HashMap;
+use crate::static_data::{self, Live};
 use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, serde::Serialize, PartialOrd, Ord)]
@@ -307,7 +308,7 @@ pub struct MarketGroup {
 }
 
 /// Every type on the market and the market's group tree, from data/market_types.json and data/market_groups.json
-/// (see tools/convert_sde.py).
+/// (converted by `static_data`).
 pub struct MarketTypes {
     pub types: Vec<MarketType>,
     by_id: HashMap<i64, usize>,
@@ -367,11 +368,16 @@ impl MarketTypes {
     }
 }
 
-pub static MARKET: LazyLock<MarketTypes> = LazyLock::new(|| {
+/// Market types and groups: from CCP's latest static data once downloaded, else the bundled snapshot.
+pub static MARKET: Live<MarketTypes> = Live::new(load_market);
+
+fn load_market() -> MarketTypes {
     let raw_types: Vec<(i64, String, i64, f64, Option<i64>)> =
-        serde_json::from_str(include_str!("../../../data/market_types.json")).expect("data/market_types.json");
+        serde_json::from_str(&static_data::read("market_types.json", include_str!("../../../data/market_types.json")))
+            .expect("market_types.json");
     let raw_groups: Vec<(i64, Option<i64>, String)> =
-        serde_json::from_str(include_str!("../../../data/market_groups.json")).expect("data/market_groups.json");
+        serde_json::from_str(&static_data::read("market_groups.json", include_str!("../../../data/market_groups.json")))
+            .expect("market_groups.json");
     let types: Vec<MarketType> = raw_types
         .into_iter()
         .map(|(id, name, group, volume, meta_group)| MarketType { id, name, group, volume, meta_group })
@@ -403,7 +409,7 @@ pub static MARKET: LazyLock<MarketTypes> = LazyLock::new(|| {
     let by_id = types.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
     let by_name = types.iter().enumerate().map(|(i, t)| (t.name.to_lowercase(), i)).collect();
     MarketTypes { types, by_id, by_name, groups, roots }
-});
+}
 
 /// A known-space solar system.
 #[derive(Debug, Clone)]
@@ -466,13 +472,17 @@ impl Map {
 /// Jove regions: no stargate leads in, so ESI answers for them but nothing trades there.
 const UNREACHABLE_REGIONS: &[i64] = &[10000004, 10000017, 10000019];
 
-pub static MAP: LazyLock<Map> = LazyLock::new(|| {
+/// Regions and systems: from CCP's latest static data once downloaded, else the bundled snapshot.
+pub static MAP: Live<Map> = Live::new(load_map);
+
+fn load_map() -> Map {
     #[derive(Deserialize)]
     struct File {
         regions: Vec<(i64, String)>,
         systems: Vec<(i64, String, i64, f64)>,
     }
-    let f: File = serde_json::from_str(include_str!("../../../data/universe.json")).expect("data/universe.json");
+    let f: File = serde_json::from_str(&static_data::read("universe.json", include_str!("../../../data/universe.json")))
+        .expect("universe.json");
     let mut regions = f.regions;
     regions.sort_by(|a, b| a.1.cmp(&b.1));
     let systems = f
@@ -481,7 +491,7 @@ pub static MAP: LazyLock<Map> = LazyLock::new(|| {
         .map(|(id, name, region, security)| (id, SolarSystem { id, name, region, security }))
         .collect();
     Map { regions, systems }
-});
+}
 
 /// The five empire trade hubs: (name, station, system, region).
 pub const TRADE_HUBS: [(&str, i64, i64, i64); 5] = [
