@@ -60,7 +60,8 @@ pub fn build(ctx: &Ctx) -> Page {
     }
 
     let names: Rc<HashMap<i64, String>> = Rc::new(chars.iter().map(|c| (c.id, c.name())).collect());
-    let price_check = ctx.recall(VIEW_KEY).as_deref() == Some("check");
+    // PODSTACK_ORDERS_VIEW=check opens the price check (for UI testing)
+    let price_check = ctx.recall(VIEW_KEY).or_else(|| std::env::var("PODSTACK_ORDERS_VIEW").ok()).as_deref() == Some("check");
     let bar = w::hbox(12);
     {
         let ctx = ctx.clone();
@@ -98,9 +99,8 @@ fn price_check_section(ctx: &Ctx, bar: &gtk::Box, orders: Vec<(i64, MarketOrder)
         section.append(&w::empty_state("price_check", "No open orders", "Open buy and sell orders are checked against the market here."));
         return section;
     }
-    let holder = w::vbox(12);
-    holder.set_vexpand(true);
-    section.append(&holder);
+    let (scroller, holder) = w::async_holder();
+    section.append(&scroller);
 
     let load: Rc<dyn Fn(bool)> = {
         let (ctx, holder) = (ctx.clone(), holder.clone());
@@ -190,6 +190,7 @@ fn checked_view(ctx: &Ctx, mut rows: Vec<Checked>, names: Rc<HashMap<i64, String
     let table = Table::new(rows)
         .widget_sorted("Item", |r| type_cell(r.order.type_id, &r.order.name), |a, b| a.order.name.to_lowercase().cmp(&b.order.name.to_lowercase()))
         .expand()
+        .width(240)
         .widget_sorted(
             "Status",
             |r| {
@@ -208,11 +209,13 @@ fn checked_view(ctx: &Ctx, mut rows: Vec<Checked>, names: Rc<HashMap<i64, String
                 k(a).cmp(&k(b))
             },
         )
+        .width(180)
         .widget_sorted(
             "Character",
             move |r| character_cell(r.character, names.get(&r.character).map(|s| s.as_str()).unwrap_or("?")),
             move |a, b| n2.get(&a.character).cmp(&n2.get(&b.character)),
         )
+        .width(170)
         .num("Your price", |r| fmt::decimal(r.order.price, 2), |r| r.order.price)
         .num("Best rival", |r| r.competition.as_ref().and_then(|c| c.best).map(|p| fmt::decimal(p, 2)).unwrap_or_else(|| "—".into()), |r| {
             r.competition.as_ref().and_then(|c| c.best).unwrap_or(0.0)

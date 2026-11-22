@@ -333,10 +333,9 @@ fn appraisal(ctx: &Ctx) -> gtk::Box {
     actions.append(&hint);
     col.append(&actions);
 
-    let right = w::vbox(12);
-    right.set_vexpand(true);
+    let (scroller, right) = w::async_holder();
     right.append(&w::empty_state("receipt_long", "Nothing appraised yet", "Paste items above and press Appraise."));
-    col.append(&right);
+    col.append(&scroller);
 
     {
         let (ctx, view) = (ctx.clone(), view.clone());
@@ -431,6 +430,7 @@ fn appraisal_results(ctx: &Ctx, rows: Vec<Appraised>, unknown: &[String], missin
     let table = Table::new(rows)
         .widget_sorted("Item", |r| type_cell(r.type_id, &r.name), |a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         .expand()
+        .width(260)
         .num("Quantity", |r| fmt::int(r.quantity), |r| r.quantity as f64)
         .num("Volume", |r| format!("{} m³", fmt::decimal(r.volume, 2)), |r| r.volume)
         .num("Sell each", move |r| price(r.sell), |r| r.sell.unwrap_or(0.0))

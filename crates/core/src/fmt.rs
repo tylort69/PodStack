@@ -26,7 +26,8 @@ pub fn decimal(n: f64, places: usize) -> String {
     let (whole, frac) = s.split_once('.').unwrap_or((&s, ""));
     let w = int(whole.parse().unwrap_or(0));
     let body = if frac.is_empty() { w } else { format!("{w}.{frac}") };
-    if neg {
+    // nothing left after rounding (or -0.0, which an empty float sum gives): no minus sign
+    if neg && body.chars().any(|c| ('1'..='9').contains(&c)) {
         format!("-{body}")
     } else {
         body
@@ -50,7 +51,7 @@ pub fn isk_short(n: f64) -> String {
     } else if a >= 1e3 {
         (n / 1e3, "k")
     } else {
-        return format!("{n:.0}");
+        return decimal(n, 0);
     };
     format!("{v:.2}{suffix}")
 }
@@ -143,6 +144,11 @@ mod tests {
         assert_eq!(int(999), "999");
         assert_eq!(decimal(1234.5, 2), "1,234.50");
         assert_eq!(isk_short(1_234_000_000.0), "1.23b");
+        assert_eq!(isk_short(-0.0), "0");
+        assert_eq!(isk_short(-0.3), "0");
+        assert_eq!(isk_short(-512.0), "-512");
+        assert_eq!(decimal(-0.001, 2), "0.00");
+        assert_eq!(decimal(-1.5, 2), "-1.50");
     }
 
     #[test]

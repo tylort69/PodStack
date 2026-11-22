@@ -501,6 +501,18 @@ pub fn copy_to_clipboard(ctx: &Ctx, t: &str) {
     ctx.toast("Copied to clipboard");
 }
 
+/// Holds content that is filled in later (after a network load): scrolls sideways instead of widening the window
+/// when that content turns out wider than the page.
+pub fn async_holder() -> (gtk::ScrolledWindow, gtk::Box) {
+    let holder = vbox(12);
+    holder.set_vexpand(true);
+    let sw = gtk::ScrolledWindow::new();
+    sw.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
+    sw.set_vexpand(true);
+    sw.set_child(Some(&holder));
+    (sw, holder)
+}
+
 /// Opens a URL in the default browser.
 pub fn open_url(ctx: &Ctx, url: &str) {
     let launcher = gtk::UriLauncher::new(url);
