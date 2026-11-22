@@ -182,7 +182,7 @@ fn table(rows: Vec<SystemPlanets>, show: Rc<dyn Fn(i64)>) -> gtk::Widget {
             let s = |x: &SystemPlanets| MAP.system(x.system).map(|s| s.security).unwrap_or(0.0);
             s(a).total_cmp(&s(b))
         })
-        .width(50)
+        .width(64)
         .text("Region", |r| MAP.system(r.system).and_then(|s| MAP.region_name(s.region)).unwrap_or("").to_string())
         .width(130)
         .num("Kinds", |r| r.kinds().to_string(), |r| r.kinds() as f64)
@@ -227,6 +227,7 @@ fn fill_detail(b: &gtk::Box, system: i64) {
         kind.set_xalign(0.0);
         row.append(&kind);
         let res = w::line(&k.resources.iter().map(|r| PI.name(*r)).collect::<Vec<_>>().join(", "), &["body-small", "dim"]);
+        res.set_ellipsize(gtk::pango::EllipsizeMode::None);
         res.set_wrap(true);
         res.set_xalign(0.0);
         res.set_hexpand(true);
@@ -275,6 +276,7 @@ fn fill_reference(b: &gtk::Box) {
         l.set_xalign(0.0);
         row.append(&l);
         let res = w::line(&k.resources.iter().map(|r| PI.name(*r)).collect::<Vec<_>>().join(", "), &["body-small"]);
+        res.set_ellipsize(gtk::pango::EllipsizeMode::None);
         res.set_wrap(true);
         res.set_xalign(0.0);
         row.append(&res);
