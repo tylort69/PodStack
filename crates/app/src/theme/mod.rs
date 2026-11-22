@@ -197,6 +197,17 @@ pub fn apply(scheme: &Scheme) {
         });
         provider.load_from_string(&css);
     });
+    // GTK keeps inherited colors (`label { color: inherit }`) until a widget's style is invalidated, so a live theme
+    // change would leave plain labels in the old theme's color. Flipping a class on each window restyles everything.
+    for win in gtk::Window::list_toplevels() {
+        if win.has_css_class("theme-a") {
+            win.remove_css_class("theme-a");
+            win.add_css_class("theme-b");
+        } else {
+            win.remove_css_class("theme-b");
+            win.add_css_class("theme-a");
+        }
+    }
     CURRENT.with(|c| *c.borrow_mut() = Some(scheme.clone()));
 }
 
