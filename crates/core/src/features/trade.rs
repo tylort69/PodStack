@@ -364,6 +364,17 @@ pub struct TradeReport {
     pub holdings: Vec<Holding>,
     /// Purchases in the history: count and ISK spent (broker fees included).
     pub bought: (usize, f64),
+    /// Every purchase, newest first, so the spending can be totalled for a period or one character.
+    pub purchases: Vec<Purchase>,
+}
+
+/// A purchase and what it cost, broker fee included.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Purchase {
+    pub character: i64,
+    pub date: DateTime<Utc>,
+    pub type_id: i64,
+    pub total: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -397,6 +408,7 @@ pub fn trade_report(chars: &[Arc<Character>], settings: &TradeSettings) -> Trade
     let mut names: HashMap<i64, String> = HashMap::new();
     let mut sales = Vec::new();
     let mut bought = (0usize, 0.0f64);
+    let mut purchases = Vec::new();
     for (char_id, t, fees, orders) in txs {
         names.entry(t.type_id).or_insert_with(|| t.name.clone());
         let value = t.unit_price * t.quantity as f64;
@@ -405,6 +417,7 @@ pub fn trade_report(chars: &[Arc<Character>], settings: &TradeSettings) -> Trade
             let total = value + broker;
             bought.0 += 1;
             bought.1 += total;
+            purchases.push(Purchase { character: char_id, date: t.date, type_id: t.type_id, total });
             if t.quantity > 0 {
                 lots.entry(t.type_id).or_default().push_back(Lot { quantity: t.quantity, unit_cost: total / t.quantity as f64, date: t.date });
             }
@@ -451,6 +464,7 @@ pub fn trade_report(chars: &[Arc<Character>], settings: &TradeSettings) -> Trade
         });
     }
     sales.reverse();
+    purchases.reverse();
     let mut holdings: Vec<Holding> = lots
         .into_iter()
         .filter_map(|(type_id, q)| {
@@ -465,7 +479,7 @@ pub fn trade_report(chars: &[Arc<Character>], settings: &TradeSettings) -> Trade
         })
         .collect();
     holdings.sort_by(|a, b| b.cost.total_cmp(&a.cost));
-    TradeReport { sales, holdings, bought }
+    TradeReport { sales, holdings, bought, purchases }
 }
 
 /// Profit totals of some sales.
@@ -819,6 +833,10 @@ mod tests {
         assert_eq!((second.matched, second.cost, second.profit), (10, 60.0, 40.0));
         assert!(!second.fully_matched());
         assert!(r.holdings.is_empty());
+        // purchases newest first, adding up to what was bought
+        assert_eq!(r.purchases.iter().map(|p| p.total).collect::<Vec<_>>(), vec![60.0, 40.0]);
+        assert_eq!(r.bought, (2, 100.0));
+        assert!(r.purchases[0].date > r.purchases[1].date && r.purchases[0].character == 1);
         settings.custom_costs.insert(34, 1.0);
         let r = trade_report(&[Arc::new(c)], &settings);
         assert_eq!((r.sales[0].matched, r.sales[0].profit), (20, 130.0));
