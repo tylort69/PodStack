@@ -221,4 +221,6 @@ pub fn duration(secs: f64) -> String {
 
 pub const CSS: &str = "
 .ind-suggestions { min-width: 360px; }
+.stat-tile .stat-value.success-text { color: @success; }
+.stat-tile .stat-value.error-text { color: @error; }
 ";

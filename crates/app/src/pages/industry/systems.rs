@@ -130,12 +130,14 @@ fn fill_tiles(tiles: &gtk::Box, rows: &[Row]) {
     }
     let mut manuf: Vec<&Row> = rows.iter().filter(|r| r.index[0] > 0.0).collect();
     manuf.sort_by(|a, b| a.index[0].total_cmp(&b.index[0]));
+    // Many quiet systems sit at the same floor value: say how many share the lowest index.
     let cheapest = |i: usize| -> (String, String) {
-        rows.iter()
-            .filter(|r| r.index[i] > 0.0)
-            .min_by(|a, b| a.index[i].total_cmp(&b.index[i]))
-            .map(|r| (pct(r.index[i]), r.name.clone()))
-            .unwrap_or_else(|| ("—".into(), "No data".into()))
+        let Some(best) = rows.iter().filter(|r| r.index[i] > 0.0).min_by(|a, b| a.index[i].total_cmp(&b.index[i])) else {
+            return ("—".into(), "No data".into());
+        };
+        let ties = rows.iter().filter(|r| (r.index[i] - best.index[i]).abs() < 1e-9).count();
+        let who = if ties > 1 { format!("{} and {} more", best.name, fmt::int(ties as i64 - 1)) } else { best.name.clone() };
+        (pct(best.index[i]), who)
     };
     let median = manuf.get(manuf.len() / 2).map(|r| pct(r.index[0])).unwrap_or_else(|| "—".into());
     let (m, ms) = cheapest(0);

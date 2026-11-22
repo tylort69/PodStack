@@ -67,7 +67,11 @@ impl SlotRow {
         let (s, u) = (self.slots?, self.usage?);
         Some((s[kind.index()] - u.used[kind.index()]).max(0))
     }
+    /// None until loaded, or when there are no slots at all (nothing loaded into the totals row yet).
     fn idle_total(&self) -> Option<i64> {
+        if self.slots.is_some_and(|s| s.iter().sum::<i64>() == 0) {
+            return None;
+        }
         SlotKind::ALL.iter().map(|k| self.idle(*k)).sum()
     }
 }

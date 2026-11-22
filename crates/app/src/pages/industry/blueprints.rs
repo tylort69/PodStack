@@ -131,6 +131,8 @@ fn search_bar(ctx: &Ctx, placeholder: &str, key: &str) -> (gtk::Box, gtk::Search
     keep_focus(ctx, &entry, key);
     bar.append(&entry);
     let count = w::line("", &["body-small", "dim", "numeric"]);
+    // room for "12,345 of 12,345" without ellipsizing
+    count.set_width_chars(16);
     count.set_valign(gtk::Align::Center);
     bar.append(&count);
     (bar, entry, count)
@@ -677,7 +679,7 @@ fn game_table(ctx: &Ctx, rows: Vec<Rc<GameRow>>) -> gtk::Widget {
         )
         .width(220)
         .text("Activity", |r| r.activity.label().to_string())
-        .width(120)
+        .width(140)
         .widget_sorted(
             "Invented from",
             |r| match r.sources.as_slice() {

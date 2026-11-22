@@ -181,6 +181,16 @@ pub(super) fn view(state: &Rc<State>, project: &Project, plan: &Plan, loading: b
     } else if !loading && prices.indices.is_none() {
         v.append(&w::banner("cloud_off", "Couldn't load the systems' cost indices: job costs leave out the system index.", w::BannerKind::Notice));
     }
+    // Reactions only run in refineries outside high security; the default NPC station can't.
+    let reacts = plan.steps.iter().any(|s| s.activity == Some(podstack_core::blueprints::Activity::Reaction));
+    let reactor = state.cx.doc.facility_for(podstack_core::blueprints::Activity::Reaction);
+    if reacts && !reactor.supports(&INDUSTRY, podstack_core::blueprints::Activity::Reaction) {
+        v.append(&w::banner(
+            "science",
+            &format!("Reactions need a refinery (Athanor, Tatara) in low or null security, and {} isn't one: add one in Facilities and make it the reaction default.", reactor.label()),
+            w::BannerKind::Notice,
+        ));
+    }
     if !plan.unbuildable.is_empty() {
         let names: Vec<String> = plan.unbuildable.iter().map(|t| INDUSTRY.type_name(*t)).collect();
         v.append(&w::banner("block", &format!("Nothing in the game builds {}: left out of the plan.", names.join(", ")), w::BannerKind::Notice));
