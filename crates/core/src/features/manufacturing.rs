@@ -138,7 +138,7 @@ pub struct IndustryDoc {
     /// Activity key → facility id.
     pub defaults: BTreeMap<String, String>,
     pub projects: Vec<Project>,
-    /// Characters whose skills plans use (None: the best level among all characters).
+    /// The character whose skills calculations use (None: the best level among all characters; 0: all at V).
     pub skills_of: Option<i64>,
     /// Hub (by name, see `sde::TRADE_HUBS`) whose prices value materials and products.
     pub price_hub: Option<String>,

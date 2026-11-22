@@ -34,8 +34,10 @@ pub fn context(ctx: &Ctx) -> Context {
     let core = ctx.core();
     let doc = mf::load(core);
     let characters = core.characters();
+    // `skills_of` 0 means every skill at V
     let chosen = doc.skills_of.and_then(|id| characters.iter().find(|c| c.id == id));
     let (levels, levels_label) = match chosen {
+        _ if doc.skills_of == Some(0) => (mf::all_five(), "all skills at V".to_string()),
         Some(c) => (mf::levels_of(c), format!("{}'s skills", c.name())),
         None if characters.iter().any(|c| c.skills.is_some()) => (mf::best_levels(&characters), "best skills of all characters".to_string()),
         None => (mf::all_five(), "all skills at V".to_string()),

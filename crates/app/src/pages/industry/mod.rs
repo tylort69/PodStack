@@ -14,6 +14,7 @@ pub mod blueprints;
 pub mod calculator;
 pub mod common;
 pub mod facilities;
+pub mod form;
 pub mod jobs;
 pub mod planner;
 pub mod systems;

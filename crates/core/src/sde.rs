@@ -463,6 +463,36 @@ impl Map {
     pub fn region_name(&self, id: i64) -> Option<&str> {
         self.regions.iter().find(|r| r.0 == id).map(|r| r.1.as_str())
     }
+    /// Systems whose name starts with `query` (then contains it), shortest names first.
+    pub fn search_systems(&self, query: &str, limit: usize) -> Vec<&SolarSystem> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let mut hits: Vec<(u8, &SolarSystem)> = self
+            .systems
+            .values()
+            .filter_map(|s| {
+                let n = s.name.to_lowercase();
+                if n == q {
+                    Some((0, s))
+                } else if n.starts_with(&q) {
+                    Some((1, s))
+                } else if n.contains(&q) {
+                    Some((2, s))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        hits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.name.len().cmp(&b.1.name.len())).then_with(|| a.1.name.cmp(&b.1.name)));
+        hits.into_iter().take(limit).map(|h| h.1).collect()
+    }
+
+    pub fn systems(&self) -> impl Iterator<Item = &SolarSystem> {
+        self.systems.values()
+    }
+
     /// Regions players trade in: known space without the Jove regions nobody can reach.
     pub fn market_regions(&self) -> impl Iterator<Item = &(i64, String)> {
         self.regions.iter().filter(|(id, _)| !UNREACHABLE_REGIONS.contains(id))
@@ -519,6 +549,7 @@ mod market_tests {
         assert_eq!(jita.name, "Jita");
         assert_eq!(jita.security_class(), SecurityClass::High);
         assert_eq!(MAP.region_name(10000002), Some("The Forge"));
+        assert_eq!(MAP.search_systems("jit", 3)[0].name, "Jita");
         for (_, station, system, region) in TRADE_HUBS {
             assert_eq!(MAP.system(system).unwrap().region, region, "{station}");
         }
