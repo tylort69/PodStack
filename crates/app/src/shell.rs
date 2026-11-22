@@ -306,6 +306,8 @@ impl Shell {
             self.actions.remove(&c);
         }
         for a in &page.actions {
+            // Centered, so a button keeps its own height instead of stretching to the bar's.
+            a.set_valign(gtk::Align::Center);
             self.actions.append(a);
         }
         while let Some(c) = self.content.first_child() {
