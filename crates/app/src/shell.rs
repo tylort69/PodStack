@@ -57,6 +57,10 @@ pub fn build(app: &gtk::Application, core: Arc<Core>) -> gtk::ApplicationWindow 
     drawer.set_transition_type(gtk::RevealerTransitionType::SlideRight);
     drawer.set_child(Some(&drawer_scroll));
     drawer.set_reveal_child(true);
+    // Keep the drawer at its own width: an expanding widget inside it would otherwise make it share the window's
+    // extra width with the page.
+    drawer.set_hexpand(false);
+    drawer_scroll.set_hexpand(false);
 
     // top app bar
     let bar = w::hbox(8);

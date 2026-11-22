@@ -141,6 +141,7 @@ fn header(ctx: &Ctx, c: &Character) -> gtk::Widget {
     };
     let tl = w::line(&training, &["title-medium"]);
     tl.set_max_width_chars(28);
+    tl.set_width_chars(12);
     stats.append(&stat("Training", &tl, sub));
     card.append(&stats);
 
@@ -201,11 +202,22 @@ fn header(ctx: &Ctx, c: &Character) -> gtk::Widget {
 }
 
 fn stat(label: &str, value: &gtk::Label, sub: Option<String>) -> gtk::Box {
+    // Numbers and captions are short: keep them whole rather than letting the header squeeze them to "Skill poin…".
+    let whole = |l: &gtk::Label| {
+        if l.max_width_chars() < 0 {
+            l.set_ellipsize(gtk::pango::EllipsizeMode::None);
+        }
+    };
     let b = w::vbox(2);
-    b.append(&w::line(label, &["label-medium", "dim"]));
+    let caption = w::line(label, &["label-medium", "dim"]);
+    whole(&caption);
+    b.append(&caption);
+    whole(value);
     b.append(value);
     if let Some(s) = sub {
-        b.append(&w::line(&s, &["body-small", "dim"]));
+        let l = w::line(&s, &["body-small", "dim"]);
+        whole(&l);
+        b.append(&l);
     }
     b
 }
