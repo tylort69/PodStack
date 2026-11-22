@@ -147,6 +147,57 @@ pub fn planets_for(product: i64) -> Option<Vec<&'static str>> {
     Some(chosen)
 }
 
+/// Everything `product` is made from, down to raw resources (not `product` itself).
+pub fn upstream(product: i64) -> HashSet<i64> {
+    let d = &*PI;
+    let mut out = HashSet::new();
+    let mut stack = vec![product];
+    while let Some(t) = stack.pop() {
+        if let Some(s) = d.schematic_for(t) {
+            for (i, _) in &s.inputs {
+                if out.insert(*i) {
+                    stack.push(*i);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Everything `input` goes into, directly or further up the chain to P4 (not `input` itself).
+pub fn downstream(input: i64) -> HashSet<i64> {
+    let d = &*PI;
+    let mut out = HashSet::new();
+    let mut stack = vec![input];
+    while let Some(t) = stack.pop() {
+        for s in d.used_by(t) {
+            if out.insert(s.output.0) {
+                stack.push(s.output.0);
+            }
+        }
+    }
+    out
+}
+
+/// Products (P1-P4) whose raw resources are all found on the given planet kinds (ESI names, like "temperate"):
+/// what colonies on those kinds can make without importing anything.
+pub fn makeable_on(kinds: &[&str]) -> Vec<i64> {
+    let d = &*PI;
+    let have: HashSet<i64> = kinds.iter().filter_map(|k| d.kind(k)).flat_map(|k| k.resources.iter().copied()).collect();
+    if have.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<i64> = d
+        .commodities
+        .values()
+        .filter(|c| c.tier >= 1 && d.schematic_for(c.id).is_some())
+        .filter(|c| d.raw_inputs(c.id).iter().all(|r| have.contains(r)))
+        .map(|c| c.id)
+        .collect();
+    out.sort_by(|a, b| d.tier(*a).cmp(&d.tier(*b)).then_with(|| d.name(*a).cmp(&d.name(*b))));
+    out
+}
+
 // ---------- economics ----------
 
 /// Customs tax for moving `units` of `type_id` through a launchpad or command center: export at the full rate,
@@ -728,6 +779,31 @@ mod tests {
         for p in PI.of_tier(4) {
             assert!(planets_for(p.id).is_some_and(|v| !v.is_empty() && v.len() <= 8), "{}", p.name);
         }
+    }
+
+    #[test]
+    fn chain_links() {
+        let coolant = by_name("Coolant");
+        let water = by_name("Water");
+        let aqueous = by_name("Aqueous Liquids");
+        let up = upstream(coolant);
+        assert!(up.contains(&water) && up.contains(&aqueous) && up.contains(&by_name("Electrolytes")));
+        assert!(!up.contains(&coolant));
+        assert!(upstream(aqueous).is_empty());
+        let down = downstream(water);
+        assert!(down.contains(&coolant));
+        assert!(down.iter().any(|t| PI.tier(*t) == Some(4)));
+        assert!(!down.contains(&water));
+        assert!(downstream(PI.of_tier(4)[0].id).is_empty());
+        // Gas planets have Aqueous Liquids and Ionic Solutions: Water, Electrolytes and so Coolant
+        let gas = makeable_on(&["gas"]);
+        assert!(gas.contains(&water) && gas.contains(&coolant));
+        assert!(!gas.contains(&by_name("Bacteria")));
+        assert!(gas.iter().all(|t| PI.tier(*t).is_some_and(|x| x >= 1)));
+        assert!(makeable_on(&[]).is_empty());
+        // every product is makeable with every planet kind
+        let all: Vec<&str> = PI.kinds.iter().map(|k| k.key).collect();
+        assert_eq!(makeable_on(&all).len(), PI.commodities.values().filter(|c| c.tier >= 1).count());
     }
 
     #[test]
