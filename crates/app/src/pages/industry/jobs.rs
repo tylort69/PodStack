@@ -1,4 +1,5 @@
-//! Industry → Jobs: every character's unfinished jobs, with headline counts, a status filter and live countdowns.
+//! Industry → Jobs: how many manufacturing, science and reaction slots each character has free, then every
+//! character's unfinished jobs, with headline counts, status and activity filters and live countdowns.
 //! The character tab (`pages/character/industry.rs`) shows the same view for one character.
 //!
 //! Also home to small cell builders the asset and PI pages share (type cells, character cells, debouncing).
@@ -8,7 +9,7 @@ use crate::widgets::{self as w, Status, Table};
 use chrono::Utc;
 use gtk::prelude::*;
 use podstack_core::domains::industry::Job;
-use podstack_core::features::industry::{self as ind, JobState};
+use podstack_core::features::industry::{self as ind, JobState, SlotKind};
 use podstack_core::{config, fmt, Character};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -18,6 +19,9 @@ use std::sync::Arc;
 const TICK: u32 = 10;
 
 const FILTERS: [&str; 4] = ["All", "In progress", "Ready", "Paused"];
+
+/// The activity filter: everything, then each `SlotKind`.
+const ACTIVITIES: [&str; 4] = ["All activities", "Manufacturing", "Science", "Reactions"];
 
 pub fn build(ctx: &Ctx) -> Page {
     let body = w::page_body();
@@ -36,8 +40,209 @@ pub fn build(ctx: &Ctx) -> Page {
     if not_loaded > 0 {
         body.append(&w::banner("hourglass_empty", &format!("{not_loaded} character(s) haven't loaded industry jobs yet."), w::BannerKind::Info));
     }
-    body.append(&jobs_view(ctx, &chars, true, "industry"));
+    if !chars.is_empty() {
+        body.append(&slots_section(ctx, &chars));
+    }
+    body.append(&jobs_view(ctx, &chars, true, "industry.jobs"));
     Page::new("Industry", body).no_scroll()
+}
+
+// ---------- slots ----------
+
+const SLOTS_HIDDEN_KEY: &str = "industry.jobs.slots_hidden";
+
+/// One character's slots (or, with `total`, everyone's).
+struct SlotRow {
+    character_id: i64,
+    name: String,
+    /// Slots per `SlotKind::index`; None until skills load.
+    slots: Option<[i64; 3]>,
+    /// None until jobs load.
+    usage: Option<ind::SlotUsage>,
+    total: bool,
+}
+
+impl SlotRow {
+    fn idle(&self, kind: SlotKind) -> Option<i64> {
+        let (s, u) = (self.slots?, self.usage?);
+        Some((s[kind.index()] - u.used[kind.index()]).max(0))
+    }
+    fn idle_total(&self) -> Option<i64> {
+        SlotKind::ALL.iter().map(|k| self.idle(*k)).sum()
+    }
+}
+
+/// Free slots per kind across all characters, then a table of every character's slots: the view that matters when
+/// many characters each have a few jobs to restart.
+fn slots_section(ctx: &Ctx, chars: &[Arc<Character>]) -> gtk::Box {
+    let now = Utc::now();
+    let mut rows: Vec<SlotRow> = chars
+        .iter()
+        .map(|c| SlotRow {
+            character_id: c.id,
+            name: c.name(),
+            slots: ind::character_slots(c),
+            usage: c.industry.as_ref().map(|d| ind::slot_usage(&d.jobs, now)),
+            total: false,
+        })
+        .collect();
+    // Totals over the characters whose skills and jobs are both known, so idle counts aren't guesses.
+    let known: Vec<&SlotRow> = rows.iter().filter(|r| r.slots.is_some() && r.usage.is_some()).collect();
+    let mut slots = [0i64; 3];
+    let mut usage = ind::SlotUsage::default();
+    for r in &known {
+        let (s, u) = (r.slots.unwrap_or_default(), r.usage.unwrap_or_default());
+        for i in 0..3 {
+            slots[i] += s[i];
+            usage.used[i] += u.used[i];
+        }
+        usage.ready += u.ready;
+        usage.next_end = match (usage.next_end, u.next_end) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
+    let total = SlotRow { character_id: 0, name: format!("All characters ({})", known.len()), slots: Some(slots), usage: Some(usage), total: true };
+
+    let section = w::vbox(12);
+    let hidden = ctx.recall(SLOTS_HIDDEN_KEY).as_deref() == Some("1");
+    let head = w::hbox(8);
+    let title = w::line("Slots", &["title-medium"]);
+    title.set_valign(gtk::Align::Center);
+    head.append(&title);
+    let idle_chars = known.iter().filter(|r| r.idle_total().unwrap_or(0) > 0).count();
+    let summary = if known.is_empty() {
+        "Waiting for skills and jobs to load".to_string()
+    } else {
+        format!(
+            "{} of {} in use · {idle_chars} character{} with idle slots",
+            fmt::int(usage.used.iter().sum()),
+            fmt::int(slots.iter().sum()),
+            if idle_chars == 1 { "" } else { "s" }
+        )
+    };
+    let sub = w::line(&summary, &["body-small", "dim"]);
+    sub.set_valign(gtk::Align::Center);
+    sub.set_hexpand(true);
+    head.append(&sub);
+    let toggle = w::icon_button(if hidden { "expand_more" } else { "expand_less" }, if hidden { "Show slots" } else { "Hide slots" });
+    {
+        let ctx = ctx.clone();
+        toggle.connect_clicked(move |_| {
+            ctx.remember(SLOTS_HIDDEN_KEY, if hidden { "0" } else { "1" });
+            let ctx = ctx.clone();
+            gtk::glib::idle_add_local_once(move || ctx.rebuild());
+        });
+    }
+    head.append(&toggle);
+    section.append(&head);
+    if hidden {
+        return section;
+    }
+
+    let tiles: Vec<gtk::Box> = SlotKind::ALL
+        .iter()
+        .map(|k| {
+            let i = k.index();
+            let idle = (slots[i] - usage.used[i]).max(0);
+            let tile = w::stat_tile(&format!("Idle {}", k.label().to_lowercase()), &fmt::int(idle), Some(&format!("{} of {} in use", usage.used[i], slots[i])));
+            if idle > 0 {
+                tile.add_css_class("accent");
+            }
+            tile
+        })
+        .collect();
+    section.append(&w::tile_row(tiles));
+
+    if rows.len() > 1 {
+        rows.push(total);
+    }
+    let ctx2 = ctx.clone();
+    let mut t = Table::new(rows).widget_sorted(
+        "Character",
+        |r| if r.total { w::line(&r.name, &["label-large"]).upcast() } else { char_cell(r.character_id, &r.name) },
+        |a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    );
+    t = t.expand();
+    for kind in SlotKind::ALL {
+        t = t.widget_sorted(
+            kind.label(),
+            move |r| slot_cell(r, kind),
+            move |a, b| a.idle(kind).cmp(&b.idle(kind)).then_with(|| a.name.cmp(&b.name)),
+        );
+    }
+    let table = t
+        .widget_sorted(
+            "Idle",
+            |r| match r.idle_total() {
+                None => w::line("—", &["dim"]).upcast(),
+                Some(0) => w::status("Busy", Status::Good).upcast(),
+                Some(n) => w::status(&format!("{n} idle"), Status::Warn).upcast(),
+            },
+            |a, b| a.idle_total().cmp(&b.idle_total()).then_with(|| b.name.to_lowercase().cmp(&a.name.to_lowercase())),
+        )
+        .widget_sorted(
+            "Next done",
+            |r| next_end_cell(r.usage.and_then(|u| u.next_end)),
+            // characters with nothing running last
+            |a, b| {
+                let end = |r: &SlotRow| r.usage.and_then(|u| u.next_end).unwrap_or(chrono::DateTime::<Utc>::MAX_UTC);
+                end(a).cmp(&end(b))
+            },
+        )
+        .num(
+            "Ready",
+            |r| r.usage.map(|u| fmt::int(u.ready as i64)).unwrap_or_else(|| "—".into()),
+            |r| r.usage.map_or(-1.0, |u| u.ready as f64),
+        )
+        .pinned_last(|r| r.total)
+        .sort_by(4, true)
+        .max_height(280)
+        .on_activate(move |r| {
+            if !r.total {
+                ctx2.navigate(Route::Character(r.character_id, CharTab::Industry));
+            }
+        })
+        .build();
+    section.append(&table);
+    section
+}
+
+/// "3 / 5" slots in use; tinted when some are idle.
+fn slot_cell(r: &SlotRow, kind: SlotKind) -> gtk::Widget {
+    let i = kind.index();
+    let text = match (r.slots, r.usage) {
+        (Some(s), Some(u)) => format!("{} / {}", u.used[i], s[i]),
+        (None, Some(u)) => format!("{} / ?", u.used[i]),
+        (Some(s), None) => format!("? / {}", s[i]),
+        (None, None) => "—".into(),
+    };
+    let classes: &[&str] = match r.idle(kind) {
+        Some(n) if n > 0 => &["numeric", "warning-text"],
+        None => &["numeric", "dim"],
+        _ => &["numeric"],
+    };
+    let l = w::line(&text, classes);
+    l.set_xalign(1.0);
+    l.upcast()
+}
+
+/// A countdown to `end`.
+fn next_end_cell(end: Option<chrono::DateTime<Utc>>) -> gtk::Widget {
+    let Some(end) = end else { return w::line("—", &["dim"]).upcast() };
+    let l = w::line("", &["numeric"]);
+    l.set_tooltip_text(Some(&format!("Ends {}", fmt::datetime(end))));
+    let update = {
+        let weak = l.downgrade();
+        move || {
+            if let Some(l) = weak.upgrade() {
+                l.set_text(&if end > Utc::now() { fmt::time_until(end) } else { "Ready".into() });
+            }
+        }
+    };
+    update();
+    w::ticker(&l, TICK, update);
+    l.upcast()
 }
 
 /// Jobs ready to deliver, across all characters.
@@ -96,8 +301,11 @@ pub(crate) fn jobs_view(ctx: &Ctx, characters: &[Arc<Character>], show_character
     ]));
 
     let rows: Vec<Row> = open.iter().map(|(c, j)| Row { character_id: c.id, character_name: c.name(), job: (*j).clone() }).collect();
-    let mem_key = format!("{key}.filter");
-    let selected: usize = ctx.recall(&mem_key).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let status_key = format!("{key}.filter");
+    let activity_key = format!("{key}.activity");
+    let status: usize = ctx.recall(&status_key).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let activity: usize = ctx.recall(&activity_key).and_then(|v| v.parse().ok()).filter(|i| *i < ACTIVITIES.len()).unwrap_or(0);
+    let filter = Rc::new(std::cell::Cell::new((status, activity)));
 
     let table_box = w::vbox(0);
     table_box.set_vexpand(true);
@@ -106,34 +314,50 @@ pub(crate) fn jobs_view(ctx: &Ctx, characters: &[Arc<Character>], show_character
         let ctx = ctx.clone();
         let table_box = table_box.clone();
         let rows = rows.clone();
-        move |filter: usize| {
+        let filter = filter.clone();
+        Rc::new(move || {
             while let Some(child) = table_box.first_child() {
                 table_box.remove(&child);
             }
             let now = Utc::now();
+            let (status, activity) = filter.get();
             let list: Vec<Row> = rows
                 .iter()
-                .filter(|r| match filter {
+                .filter(|r| match status {
                     1 => ind::job_state(&r.job, now) == JobState::Active,
                     2 => ind::job_state(&r.job, now) == JobState::Ready,
                     3 => ind::job_state(&r.job, now) == JobState::Paused,
                     _ => true,
                 })
+                .filter(|r| activity == 0 || SlotKind::of_activity(r.job.activity_id) == SlotKind::ALL[activity - 1])
                 .cloned()
                 .collect();
             table_box.append(&jobs_table(&ctx, list, show_character, rows.is_empty()));
-        }
+        })
     };
-    fill(selected);
+    fill();
 
     let bar = w::hbox(12);
-    let ctx2 = ctx.clone();
-    let fill = Rc::new(fill);
-    let f2 = fill.clone();
-    bar.append(&w::segmented(&FILTERS, selected, move |i| {
-        ctx2.remember(&mem_key, i.to_string());
-        f2(i);
-    }));
+    {
+        let (ctx, filter, fill) = (ctx.clone(), filter.clone(), fill.clone());
+        bar.append(&w::segmented(&FILTERS, status, move |i| {
+            ctx.remember(&status_key, i.to_string());
+            filter.set((i, filter.get().1));
+            fill();
+        }));
+    }
+    let activities = w::dropdown(&ACTIVITIES, activity as u32);
+    activities.set_tooltip_text(Some("Jobs by the slot they take"));
+    {
+        let (ctx, filter, fill) = (ctx.clone(), filter.clone(), fill.clone());
+        activities.connect_selected_notify(move |d| {
+            let i = d.selected() as usize;
+            ctx.remember(&activity_key, i.to_string());
+            filter.set((filter.get().0, i));
+            fill();
+        });
+    }
+    bar.append(&activities);
     view.append(&bar);
     view.append(&table_box);
     view
@@ -144,7 +368,7 @@ fn jobs_table(ctx: &Ctx, rows: Vec<Row>, show_character: bool, none_at_all: bool
         return if none_at_all {
             w::empty_state("precision_manufacturing", "No industry jobs running", "Jobs started in-game show up here, with a countdown to when they can be delivered.").upcast()
         } else {
-            w::empty_state("filter_alt_off", "No jobs match", "No jobs have this status right now.").upcast()
+            w::empty_state("filter_alt_off", "No jobs match", "No jobs have this status and activity right now.").upcast()
         };
     }
     let mut t = Table::new(rows);
