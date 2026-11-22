@@ -26,3 +26,6 @@ pub mod character_extras;
 // Desktop alerts and password-protected backups
 pub mod alerts;
 pub mod backup;
+
+// Market browser, order competition, trade profits and appraisal (`trade`).
+pub mod trade;

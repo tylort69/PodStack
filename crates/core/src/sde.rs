@@ -283,3 +283,234 @@ mod tests {
         assert_eq!(sp_for_level(5, 4), 226_274);
     }
 }
+
+/// A type sold on the market.
+#[derive(Debug, Clone)]
+pub struct MarketType {
+    pub id: i64,
+    pub name: String,
+    pub group: i64,
+    /// Packaged m³.
+    pub volume: f64,
+    /// 1 Tech I, 2 Tech II, 3 Storyline, 4 Faction, 5 Officer, 6 Deadspace, 14 Tech III, …
+    pub meta_group: Option<i64>,
+}
+
+/// A node of the market's group tree: groups hold either subgroups or types.
+#[derive(Debug, Clone)]
+pub struct MarketGroup {
+    pub id: i64,
+    pub parent: Option<i64>,
+    pub name: String,
+    pub children: Vec<i64>,
+    pub types: Vec<i64>,
+}
+
+/// Every type on the market and the market's group tree, from data/market_types.json and data/market_groups.json
+/// (see tools/convert_sde.py).
+pub struct MarketTypes {
+    pub types: Vec<MarketType>,
+    by_id: HashMap<i64, usize>,
+    by_name: HashMap<String, usize>,
+    pub groups: HashMap<i64, MarketGroup>,
+    pub roots: Vec<i64>,
+}
+
+impl MarketTypes {
+    pub fn get(&self, id: i64) -> Option<&MarketType> {
+        self.by_id.get(&id).map(|&i| &self.types[i])
+    }
+
+    /// Exact name, ignoring case and surrounding spaces.
+    pub fn by_name(&self, name: &str) -> Option<&MarketType> {
+        self.by_name.get(&name.trim().to_lowercase()).map(|&i| &self.types[i])
+    }
+
+    /// Types whose name contains every word of `query`: exact matches first, then names starting with the query,
+    /// then shorter names.
+    pub fn search(&self, query: &str, limit: usize) -> Vec<&MarketType> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let words: Vec<&str> = q.split_whitespace().collect();
+        let mut hits: Vec<(u8, usize, &MarketType)> = self
+            .types
+            .iter()
+            .filter_map(|t| {
+                let n = t.name.to_lowercase();
+                if !words.iter().all(|w| n.contains(w)) {
+                    return None;
+                }
+                let rank = if n == q { 0 } else if n.starts_with(&q) { 1 } else if n.contains(&q) { 2 } else { 3 };
+                Some((rank, t.name.len(), t))
+            })
+            .collect();
+        hits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.name.cmp(&b.2.name)));
+        hits.into_iter().take(limit).map(|h| h.2).collect()
+    }
+
+    /// Group names from the root down to `group` ("Manufacture & Research", "Materials", "Minerals").
+    pub fn path(&self, group: i64) -> Vec<&MarketGroup> {
+        let mut out = Vec::new();
+        let mut cur = Some(group);
+        while let Some(id) = cur {
+            let Some(g) = self.groups.get(&id) else { break };
+            out.push(g);
+            cur = g.parent;
+            if out.len() > 16 {
+                break;
+            }
+        }
+        out.reverse();
+        out
+    }
+}
+
+pub static MARKET: LazyLock<MarketTypes> = LazyLock::new(|| {
+    let raw_types: Vec<(i64, String, i64, f64, Option<i64>)> =
+        serde_json::from_str(include_str!("../../../data/market_types.json")).expect("data/market_types.json");
+    let raw_groups: Vec<(i64, Option<i64>, String)> =
+        serde_json::from_str(include_str!("../../../data/market_groups.json")).expect("data/market_groups.json");
+    let types: Vec<MarketType> = raw_types
+        .into_iter()
+        .map(|(id, name, group, volume, meta_group)| MarketType { id, name, group, volume, meta_group })
+        .collect();
+    let mut groups: HashMap<i64, MarketGroup> = raw_groups
+        .into_iter()
+        .map(|(id, parent, name)| (id, MarketGroup { id, parent, name, children: Vec::new(), types: Vec::new() }))
+        .collect();
+    let ids: Vec<(i64, Option<i64>)> = groups.values().map(|g| (g.id, g.parent)).collect();
+    let mut roots = Vec::new();
+    for (id, parent) in ids {
+        match parent.filter(|p| groups.contains_key(p)) {
+            Some(p) => groups.get_mut(&p).unwrap().children.push(id),
+            None => roots.push(id),
+        }
+    }
+    for t in &types {
+        if let Some(g) = groups.get_mut(&t.group) {
+            g.types.push(t.id);
+        }
+    }
+    let names: HashMap<i64, String> = groups.values().map(|g| (g.id, g.name.clone())).collect();
+    let type_names: HashMap<i64, &str> = types.iter().map(|t| (t.id, t.name.as_str())).collect();
+    for g in groups.values_mut() {
+        g.children.sort_by(|a, b| names[a].cmp(&names[b]));
+        g.types.sort_by(|a, b| type_names[a].cmp(type_names[b]));
+    }
+    roots.sort_by(|a, b| names[a].cmp(&names[b]));
+    let by_id = types.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
+    let by_name = types.iter().enumerate().map(|(i, t)| (t.name.to_lowercase(), i)).collect();
+    MarketTypes { types, by_id, by_name, groups, roots }
+});
+
+/// A known-space solar system.
+#[derive(Debug, Clone)]
+pub struct SolarSystem {
+    pub id: i64,
+    pub name: String,
+    pub region: i64,
+    /// True security status; EVE shows it rounded to one decimal (see `display_security`).
+    pub security: f64,
+}
+
+impl SolarSystem {
+    /// Security as EVE shows it: rounded to one decimal, except that anything just above 0 counts as 0.1.
+    pub fn display_security(&self) -> f64 {
+        if self.security > 0.0 && self.security < 0.05 {
+            0.1
+        } else {
+            (self.security * 10.0).round() / 10.0
+        }
+    }
+    pub fn security_class(&self) -> SecurityClass {
+        let s = self.display_security();
+        if s >= 0.5 {
+            SecurityClass::High
+        } else if s > 0.0 {
+            SecurityClass::Low
+        } else {
+            SecurityClass::Null
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, Deserialize)]
+pub enum SecurityClass {
+    High,
+    Low,
+    Null,
+}
+
+/// Known-space regions and systems, from data/universe.json.
+pub struct Map {
+    /// (id, name), by name.
+    pub regions: Vec<(i64, String)>,
+    systems: HashMap<i64, SolarSystem>,
+}
+
+impl Map {
+    pub fn system(&self, id: i64) -> Option<&SolarSystem> {
+        self.systems.get(&id)
+    }
+    pub fn region_name(&self, id: i64) -> Option<&str> {
+        self.regions.iter().find(|r| r.0 == id).map(|r| r.1.as_str())
+    }
+    /// Regions players trade in: known space without the Jove regions nobody can reach.
+    pub fn market_regions(&self) -> impl Iterator<Item = &(i64, String)> {
+        self.regions.iter().filter(|(id, _)| !UNREACHABLE_REGIONS.contains(id))
+    }
+}
+
+/// Jove regions: no stargate leads in, so ESI answers for them but nothing trades there.
+const UNREACHABLE_REGIONS: &[i64] = &[10000004, 10000017, 10000019];
+
+pub static MAP: LazyLock<Map> = LazyLock::new(|| {
+    #[derive(Deserialize)]
+    struct File {
+        regions: Vec<(i64, String)>,
+        systems: Vec<(i64, String, i64, f64)>,
+    }
+    let f: File = serde_json::from_str(include_str!("../../../data/universe.json")).expect("data/universe.json");
+    let mut regions = f.regions;
+    regions.sort_by(|a, b| a.1.cmp(&b.1));
+    let systems = f
+        .systems
+        .into_iter()
+        .map(|(id, name, region, security)| (id, SolarSystem { id, name, region, security }))
+        .collect();
+    Map { regions, systems }
+});
+
+/// The five empire trade hubs: (name, station, system, region).
+pub const TRADE_HUBS: [(&str, i64, i64, i64); 5] = [
+    ("Jita", 60003760, 30000142, 10000002),
+    ("Amarr", 60008494, 30002187, 10000043),
+    ("Dodixie", 60011866, 30002659, 10000032),
+    ("Rens", 60004588, 30002510, 10000030),
+    ("Hek", 60005686, 30002053, 10000042),
+];
+
+#[cfg(test)]
+mod market_tests {
+    use super::*;
+
+    #[test]
+    fn market_data() {
+        let trit = MARKET.get(34).unwrap();
+        assert_eq!(trit.name, "Tritanium");
+        let path: Vec<&str> = MARKET.path(trit.group).iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(path, ["Manufacture & Research", "Materials", "Minerals"]);
+        assert_eq!(MARKET.by_name(" tritanium ").map(|t| t.id), Some(34));
+        assert_eq!(MARKET.search("tritan", 5)[0].id, 34);
+        assert!(MARKET.roots.iter().any(|r| MARKET.groups[r].name == "Ships"));
+        let jita = MAP.system(30000142).unwrap();
+        assert_eq!(jita.name, "Jita");
+        assert_eq!(jita.security_class(), SecurityClass::High);
+        assert_eq!(MAP.region_name(10000002), Some("The Forge"));
+        for (_, station, system, region) in TRADE_HUBS {
+            assert_eq!(MAP.system(system).unwrap().region, region, "{station}");
+        }
+    }
+}

@@ -195,7 +195,29 @@ async fn refresh_journal(cx: &Cx) -> DomainResult {
     let ids: Vec<i64> = raw.iter().flat_map(|e| [e.first_party_id, e.second_party_id]).flatten().collect();
     let names = cx.universe().names(cx.esi(), ids).await;
     let data = build_journal(raw, &names);
-    Ok(Box::new(move |c| c.wallet_journal = Some(data)))
+    Ok(Box::new(move |c| {
+        let old = c.wallet_journal.take().map(|d| d.entries).unwrap_or_default();
+        c.wallet_journal = Some(JournalData { entries: merge_history(old, data.entries, |e| e.id, |a, b| b.date.cmp(&a.date).then(b.id.cmp(&a.id))) });
+    }))
+}
+
+/// Most entries kept per character. ESI only serves the last 30 days (2500 transactions), so PodStack keeps what
+/// it has seen to track trade profits further back.
+const HISTORY_LIMIT: usize = 50_000;
+
+/// Adds newly fetched entries to the ones kept from earlier refreshes (the new copy wins), newest first.
+fn merge_history<T, K: std::hash::Hash + Eq>(
+    old: Vec<T>,
+    new: Vec<T>,
+    key: impl Fn(&T) -> K,
+    order: impl Fn(&T, &T) -> std::cmp::Ordering,
+) -> Vec<T> {
+    let fresh: std::collections::HashSet<K> = new.iter().map(&key).collect();
+    let mut all = new;
+    all.extend(old.into_iter().filter(|t| !fresh.contains(&key(t))));
+    all.sort_by(order);
+    all.truncate(HISTORY_LIMIT);
+    all
 }
 
 #[derive(Deserialize)]
@@ -242,7 +264,13 @@ async fn refresh_transactions(cx: &Cx) -> DomainResult {
     let locations: Vec<i64> = raw.iter().map(|t| t.location_id).collect();
     let places = cx.universe().places(cx.esi(), locations, Some(&cx.auth)).await;
     let data = build_transactions(raw, &names, &places);
-    Ok(Box::new(move |c| c.wallet_transactions = Some(data)))
+    Ok(Box::new(move |c| {
+        let old = c.wallet_transactions.take().map(|d| d.transactions).unwrap_or_default();
+        let transactions = merge_history(old, data.transactions, |t| t.transaction_id, |a, b| {
+            b.date.cmp(&a.date).then(b.transaction_id.cmp(&a.transaction_id))
+        });
+        c.wallet_transactions = Some(TransactionsData { transactions });
+    }))
 }
 
 #[derive(Deserialize)]

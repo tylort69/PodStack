@@ -6,6 +6,7 @@ pub mod character;
 pub mod contracts;
 pub mod fit_planner;
 pub mod industry;
+pub mod market;
 pub mod market_orders;
 pub mod overview;
 pub mod planets;
@@ -26,7 +27,7 @@ pub fn build(ctx: &Ctx, route: Route) -> Page {
         Route::SpFarming => sp_farming::build(ctx),
         Route::Contracts => contracts::build(ctx),
         Route::AssetSearch => asset_search::build(ctx),
-        Route::MarketOrders => market_orders::build(ctx),
+        Route::Market => market::build(ctx),
         Route::Industry => industry::build(ctx),
         Route::Planets => planets::build(ctx),
         Route::Settings => settings::build(ctx),
@@ -39,7 +40,7 @@ pub fn build(ctx: &Ctx, route: Route) -> Page {
 pub fn nav_badge(core: &podstack_core::Core, route: Route) -> Option<u32> {
     match route {
         Route::QueueHealth => queue_health::nav_badge(core),
-        Route::MarketOrders => market_orders::nav_badge(core),
+        Route::Market => market::nav_badge(core),
         Route::Industry => industry::nav_badge(core),
         Route::Planets => planets::nav_badge(core),
         _ => None,

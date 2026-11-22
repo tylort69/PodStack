@@ -110,7 +110,7 @@ pub enum Route {
     SpFarming,
     Contracts,
     AssetSearch,
-    MarketOrders,
+    Market,
     Industry,
     Planets,
     Settings,
@@ -128,7 +128,7 @@ impl Route {
         (Route::SpFarming, "SP Farming", "opacity"),
         (Route::Contracts, "Contracts", "assignment"),
         (Route::AssetSearch, "Asset Search", "manage_search"),
-        (Route::MarketOrders, "Market", "storefront"),
+        (Route::Market, "Market", "storefront"),
         (Route::Industry, "Industry Jobs", "precision_manufacturing"),
         (Route::Planets, "Planetary Industry", "public"),
     ];
@@ -238,7 +238,6 @@ impl Ctx {
     }
 
     /// Rebuilds the current page now.
-    #[allow(dead_code)] // for static pages that want a full rebuild after an action
     pub fn rebuild(&self) {
         if let Some(f) = self.0.rebuild.borrow().as_ref() {
             f();
