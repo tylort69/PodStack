@@ -226,7 +226,8 @@ pub fn build(app: &gtk::Application, core: Arc<Core>) -> gtk::ApplicationWindow 
     }
 
     shell.rebuild_drawer();
-    shell.navigate(Route::Overview, false);
+    let start = std::env::var("PODSTACK_START_ROUTE").ok().and_then(|r| Route::parse(&r)).unwrap_or(Route::Overview);
+    shell.navigate(start, false);
     if core.characters().is_empty() {
         let ctx = ctx.clone();
         glib::idle_add_local_once(move || login::show(&ctx));
