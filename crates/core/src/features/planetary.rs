@@ -58,6 +58,30 @@ pub fn save(core: &Core, doc: &PiDoc) {
     core.emit(Event::Doc(DOC.into()));
 }
 
+/// Days a task stays marked done. Its key changes once the colony's data does, so older marks only take up space.
+pub const DONE_KEEP_DAYS: i64 = 14;
+
+impl PiDoc {
+    pub fn is_done(&self, key: &str) -> bool {
+        self.done.contains_key(key)
+    }
+
+    /// Marks a maintenance task done (or open again), and forgets marks older than `DONE_KEEP_DAYS`.
+    pub fn set_done(&mut self, key: &str, done: bool, now: DateTime<Utc>) {
+        if done {
+            self.done.insert(key.to_string(), now);
+        } else {
+            self.done.remove(key);
+        }
+        self.prune_done(now);
+    }
+
+    pub fn prune_done(&mut self, now: DateTime<Utc>) {
+        let cutoff = now - Duration::days(DONE_KEEP_DAYS);
+        self.done.retain(|_, t| *t >= cutoff);
+    }
+}
+
 // ---------- chains ----------
 
 /// One product in a chain, with how much of it a target rate needs.
@@ -798,6 +822,22 @@ mod tests {
         assert!(plan.planets.iter().any(|p| matches!(p.role, PlanetRole::Factory { .. })));
         assert!(plan.planets.iter().any(|p| matches!(&p.role, PlanetRole::Extract { resources } if !resources.is_empty())));
         assert_eq!(plan_progress(&plan, &[c], now).len(), plan.planets.len());
+    }
+
+    #[test]
+    fn done_marks() {
+        let now = Utc::now();
+        let mut doc = PiDoc::default();
+        doc.done.insert("old".into(), now - Duration::days(DONE_KEEP_DAYS + 1));
+        doc.done.insert("recent".into(), now - Duration::days(2));
+        doc.set_done("restart:7:1:0", true, now);
+        assert!(doc.is_done("restart:7:1:0"));
+        assert!(doc.is_done("recent"));
+        // marking anything drops marks past the keep window
+        assert!(!doc.is_done("old"));
+        doc.set_done("restart:7:1:0", false, now);
+        assert!(!doc.is_done("restart:7:1:0"));
+        assert_eq!(doc.done.len(), 1);
     }
 
     #[test]
