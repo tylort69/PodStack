@@ -286,12 +286,15 @@ impl Market {
     }
 
     /// Best buy and sell price per type in a region, optionally only orders at one station or structure. Uses the
-    /// same cached order books as the browser. Types that failed to load are left out.
+    /// same cached order books as the browser. Types that failed to load are left out. PLEX is priced on New Eden's
+    /// single PLEX market wherever it's asked for.
     pub async fn best_prices(&self, esi: &Esi, region: i64, location: Option<i64>, type_ids: &[i64], force: bool) -> HashMap<i64, BestPrices> {
         let mut out = HashMap::new();
+        let market_of = |t: i64| if t == PLEX_TYPE_ID { (GLOBAL_PLEX_MARKET, None) } else { (region, location) };
         for chunk in type_ids.chunks(CONCURRENCY) {
-            let futs = chunk.iter().map(|&t| self.orders(esi, region, t, force));
+            let futs = chunk.iter().map(|&t| self.orders(esi, market_of(t).0, t, force));
             for (&t, result) in chunk.iter().zip(futures::future::join_all(futs).await) {
+                let location = market_of(t).1;
                 match result {
                     Ok(book) => {
                         out.insert(t, BestPrices::of(book.iter().filter(|o| location.is_none_or(|l| o.location_id == l))));
