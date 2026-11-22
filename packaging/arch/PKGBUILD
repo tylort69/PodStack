@@ -20,6 +20,9 @@ provides=('podstack')
 conflicts=('podstack')
 source=("git+${url}.git#branch=rust-rewrite")
 sha256sums=('SKIP')
+# makepkg's LTO turns the bundled C crypto library (aws-lc) into GCC LTO objects that the Rust linker can't read.
+# Rust's own LTO (Cargo.toml) still applies.
+options=('!lto')
 
 pkgver() {
   cd "$_pkgname"
