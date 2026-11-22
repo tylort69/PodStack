@@ -561,6 +561,32 @@ impl Plan {
         }
         t
     }
+
+    /// About how long the whole plan takes with `slots` (manufacturing, science, reactions) slots: each level runs
+    /// after the levels below it (its materials come from them), reactions and manufacturing of a level side by
+    /// side, and inventions from the start, holding up only the levels that build from invented copies.
+    pub fn estimated_time(&self, slots: (usize, usize, usize)) -> f64 {
+        let (manufacturing, science, reactions) = (slots.0.max(1), slots.1.max(1), slots.2.max(1));
+        let attempts: Vec<f64> = self.inventions.iter().flat_map(|i| std::iter::repeat_n(i.invention.time, i.attempts.max(0) as usize)).collect();
+        let invention_done = wall_time(attempts, science);
+        let invented: HashSet<i64> = self.inventions.iter().map(|i| i.invention.blueprint).collect();
+        let deepest = self.steps.iter().map(|s| s.depth).max().unwrap_or(0);
+        let mut t = 0.0;
+        for d in (0..=deepest).rev() {
+            let level: Vec<&Step> = self.steps.iter().filter(|s| s.depth == d).collect();
+            if level.is_empty() {
+                continue;
+            }
+            if level.iter().any(|s| invented.contains(&s.blueprint)) {
+                t = f64::max(t, invention_done);
+            }
+            let times = |reaction: bool| -> Vec<f64> {
+                level.iter().filter(|s| (s.activity == Some(Activity::Reaction)) == reaction).flat_map(|s| s.job_times.iter().copied()).collect()
+            };
+            t += f64::max(wall_time(times(false), manufacturing), wall_time(times(true), reactions));
+        }
+        t
+    }
 }
 
 /// How long jobs take on `slots` parallel slots: each job goes to the slot that frees up first, longest first.
@@ -910,5 +936,28 @@ mod tests {
         let rifter = p.steps.iter().find(|s| s.product == 587).unwrap();
         assert!(rifter.jobs.len() > 1);
         assert_eq!(rifter.jobs.iter().sum::<i64>(), 200);
+    }
+
+    #[test]
+    fn estimates_plan_time() {
+        let step = |product: i64, depth: usize, activity: Activity, job_times: Vec<f64>| Step { product, blueprint: product + 1, activity: Some(activity), depth, job_times, ..Step::default() };
+        let mut p = Plan {
+            steps: vec![
+                step(1, 2, Activity::Reaction, vec![100.0, 100.0]),
+                step(2, 2, Activity::Manufacturing, vec![50.0]),
+                step(3, 1, Activity::Manufacturing, vec![30.0, 30.0, 30.0]),
+                step(4, 0, Activity::Manufacturing, vec![10.0]),
+            ],
+            ..Plan::default()
+        };
+        // level 2: reactions 200 on one slot (manufacturing 50 alongside), level 1: 90, level 0: 10
+        assert_eq!(p.estimated_time((1, 1, 1)), 300.0);
+        // two reaction slots halve level 2; three manufacturing slots run level 1 at once
+        assert_eq!(p.estimated_time((3, 1, 2)), 100.0 + 30.0 + 10.0);
+        // an invention of the target's blueprint that takes longer than the levels below it holds up the target
+        p.inventions.push(InventionStep { invention: Invention { blueprint: 5, time: 1000.0, ..Invention::default() }, copies: 1, attempts: 2 });
+        assert_eq!(p.estimated_time((3, 1, 2)), 2000.0 + 10.0);
+        assert_eq!(p.estimated_time((3, 2, 2)), 1000.0 + 10.0);
+        assert_eq!(Plan::default().estimated_time((0, 0, 0)), 0.0);
     }
 }
