@@ -1,0 +1,16 @@
+name: CI
+on:
+  push:
+    branches: [rust-rewrite, master]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm --needed git rust gtk4 clang cmake
+      - uses: actions/checkout@v4
+      - run: cargo build --workspace --locked
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --locked -- -D warnings

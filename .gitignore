@@ -3,6 +3,8 @@
 /legacy/out
 /legacy/dist
 *.log
-/pkg
-/src
+/packaging/arch/src
+/packaging/arch/pkg
+/packaging/arch/PodStack
 *.pkg.tar.zst
+/.claude/

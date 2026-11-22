@@ -1,111 +1,82 @@
-# PodStack
+# PodStack (native)
 
 [![license: AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-red.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![latest release](https://img.shields.io/github/v/release/1234nin4321/PodStack?label=latest)](https://github.com/1234nin4321/PodStack/releases/latest)
-[![downloads](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2F1234nin4321%2FPodStack%2Fmaster%2Fstats%2Fdownloads.json&query=%24.totals.all&label=downloads)](stats/downloads.json)
-[![downloads this month](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2F1234nin4321%2FPodStack%2Fmaster%2Fstats%2Fdownloads.json&query=%24.thisMonth.all&label=this%20month)](stats/downloads.json)
 
-PodStack is a desktop app for monitoring your EVE Online characters. It is built for ease of use and speed, especially for people who manage a lot of characters.
+PodStack is a desktop app for monitoring your EVE Online characters, built for ease of use and speed, especially
+if you manage a lot of characters. This fork is a native rewrite in **Rust + GTK4** for **Linux (Arch, Hyprland)**,
+redesigned around Google's **Material You** (Material 3): dynamic color from your wallpaper, tonal surfaces, a
+navigation drawer, cards, chips and data tables.
 
-PodStack is in beta. Expect bugs: it may lose tokens, crash or freeze.
+It's a rewrite of [1234nin4321/PodStack](https://github.com/1234nin4321/PodStack) (Electron + React, itself a fork of
+Cerebral). The original code is kept in [`legacy/`](legacy) for reference. The 3D ship viewer isn't part of the
+native app.
 
-Features
--------------------------
-* Add characters through EVE SSO v2.
-* Overview of all characters: Alpha/Omega status, corp/alliance, ISK, SP, current skill in training and time remaining.
-* SP farming overview: mark characters as SP farms with a base SP to keep (un-extractable), then see:
-    * Injectors ready to extract
-    * Time until the next injector is ready
-    * Total time left in the training queue
-    * Current SP/hour
-* Contracts across all characters:
-    * Type, status, title, issuer, assignee/acceptor, date issued and date completed.
-    * Origin, destination and volume for courier contracts.
-    * Separate tables for active and completed (including deleted, reversed, etc.) contracts.
-* Per-character pages:
-    * Summary: date of birth, security status, SP, wallet, home/current location, active ship, unallocated SP, attributes and remaps, implants, skill queue, jump clones, jump fatigue, loyalty points
-    * Skills: trained skills by group, SP per skill and group, partially trained skills
-    * Skill plans: basic skill planning, with import/export
-    * Mail: your EVE mail
-    * Contracts: pending/completed contracts involving the character
-    * Assets: everything the character owns, grouped by location, searchable by item, ship name or location, with estimated values
-    * Industry and PI: running industry jobs, and planetary colonies with extractor timers and stored goods
-    * API: token scopes, data refresh intervals and token health, and removing the character
-* Industry Jobs and Planetary Industry pages across all characters, with nav badges for jobs ready to deliver and stopped extractors.
-* SP farm profit: ISK per farm per 30 days from Jita prices, after market fees, extractors and Omega/MCT costs.
-* Desktop alerts (Settings): training stopped or running low, lapsed to Alpha, injector ready, contract completed, new mail,
-  jump fatigue ended, industry job ready, PI extractor stopped.
-* Skill plans: paste a skill list ("Caldari Cruiser IV", one per line) from the EVE client, EVEMon or a forum post.
-* Password-protected backup and restore of characters, skill plans, farms, accounts and settings (Settings).
+## Features
 
-Planned
--------------------------
-* Account manager for subscriptions/MPT expiry
+- Add characters through EVE SSO v2 (PKCE).
+- Overview of all characters: Alpha/Omega, corp/alliance, ISK, SP, skill in training and time left.
+- SP farming: farms with a base SP to keep, injectors ready, time to the next one, queue time left, SP/hour, and
+  ISK per farm per 30 days from Jita prices after fees, extractors and Omega/MCT costs.
+- Queue health across all characters.
+- Contracts, market orders, industry jobs and planetary industry across all characters, with drawer badges for
+  orders expiring, jobs ready and extractors stopped.
+- Asset search across all characters with estimated values.
+- Per character: summary, skills, skill plans (remaps, implants, accelerators, skillbooks, import/export, paste
+  from EVE/EVEMon, fit planner), clones, mail, wallet (journal, transactions, balance chart), market, contracts,
+  assets, industry, research agents, PI, notifications, calendar, standings, contacts, kill log, medals, and ESI
+  token/scope health.
+- Skill browser and ship browser with time-to-train for any character.
+- Desktop alerts (training stopped or low, lapsed to Alpha, injector ready, contract completed, new mail, jump
+  fatigue ended, industry job ready, PI extractor stopped) through your notification daemon.
+- Tray icon (StatusNotifierItem) with close-to-tray.
+- Password-protected backup and restore.
 
-Install
--------------------------
-1. Download `PodStack-<version>.Setup.exe` from the [latest release](https://github.com/1234nin4321/PodStack/releases/latest) and run it.
-2. PodStack installs for your Windows user (no admin rights needed), adds a **Desktop shortcut** and a **Start Menu** entry, and starts.
-3. Windows SmartScreen may say the installer is unrecognised, because it isn't code-signed yet. Choose **More info**, then **Run anyway**.
+## Theming
 
-PodStack checks for new versions and tells you when one is available; choose **Update now** to download and install it.
-Removing the desktop shortcut is fine: updates won't put it back.
+Settings → Appearance:
 
-The `.zip` on the release page is a portable copy: unzip and run `PodStack.exe`. It doesn't install, add shortcuts or update itself.
+- **Wallpaper (matugen)** — the default when [matugen](https://github.com/InioX/matugen) is installed. If your
+  matugen config includes PodStack's template ([`packaging/matugen`](packaging/matugen)), PodStack uses exactly the
+  colors the rest of your desktop gets and re-themes live when you change wallpaper. Otherwise it runs matugen on
+  your current wallpaper (`~/.cache/current-wallpaper`, hyprpaper or swww), or on an image you pick.
+- **EVE factions** — Amarr, Caldari, Gallente, Minmatar, Jove, ORE, CONCORD, EDENCOM, Triglavian, Sansha's Nation,
+  Guristas, Angel Cartel, Blood Raiders, Serpentis.
+- **Custom** — any seed color.
 
-Uninstall
--------------------------
-Open **Settings → Apps → Installed apps** (or Control Panel → Programs and Features), find **PodStack** and choose
-**Uninstall**. This removes the app and its shortcuts.
+Every source produces a full Material 3 scheme (dark, light or follow the system), with a choice of scheme variant
+(tonal spot, vibrant, expressive, …) and contrast.
 
-Your characters, plans and settings stay in `%APPDATA%\PodStack` so a reinstall picks them up. Delete that folder as
-well to remove everything, including your EVE login tokens.
+## Install (Arch)
 
-Development
--------------------------
-```
-npm install
-npm start          # run in development mode
-npm run make       # build installers into out/make
-npm run stats      # downloads per release and per month, as a running total (--save updates stats/downloads.json)
-npm run update-skills  # refresh skills, skillbook prices and Alpha caps from EVE's latest static data export
+```sh
+cd packaging/arch
+makepkg -si
 ```
 
-Usage
--------------------------
-1. Add characters with the "Authorize Character" button and log in with EVE. Data refreshes automatically.
-2. Characters added before 0.2.3 used the EVE login inherited from Cerebral, which can't grant the assets, industry and
-   PI permissions. Their API tab shows those as missing: use "Add missing scopes" to log in again with PodStack's own
-   EVE application.
+The PKGBUILD builds the `rust-rewrite` branch from GitHub. Optional: `matugen` (wallpaper colors), a notification
+daemon (mako, dunst, swaync), and a bar with a tray (waybar, quickshell).
 
-Building your own copy? PodStack's EVE application id is `eve_sso_client_id` in `resources/properties.js`. For a fork,
-create an application on the [EVE Developers website](https://developers.eveonline.com/) with the callback URL
-`https://localhost/callback` and every scope listed in that file, and put its client ID there (no secret is needed).
-3. SP farming:
-    * Click "Add Farm", choose a character and enter the SP to always keep on it (for example the 11,000,000 SP a JF pilot needs).
-    * To change a farm's base SP, add it again with the new value.
-    * To remove a farm, add it again with the Base SP box empty.
+Hyprland rules for the dialogs are in [`packaging/hyprland/podstack.lua`](packaging/hyprland/podstack.lua).
 
-FAQ
--------------------------
-**Where are my tokens stored?**
+## Build from source
 
-In your user data folder, e.g. `%APPDATA%/PodStack/authorized-characters.json` on Windows. You can back this file up and restore it later. Keep it private: its contents let anyone query your character data from CCP.
+```sh
+cargo run --release
+```
 
-PodStack only talks to CCP's servers; token data never goes anywhere else.
+Needs Rust (stable) and GTK 4.20+. Data lives in `~/.local/share/podstack` (tokens in `auth.json`, mode 0600) and
+caches in `~/.cache/podstack`. Set `PODSTACK_DATA_DIR` / `PODSTACK_CACHE_DIR` to use other folders and
+`PODSTACK_LOG=debug` for verbose logs.
 
-**Why is there no Alpha/Omega icon next to my character?**
+## Logging in
 
-The API doesn't expose Alpha/Omega status directly, so PodStack infers it from several checks. No icon means it couldn't tell.
+By default PodStack uses its EVE application, whose callback is `https://localhost/callback`: after you authorize,
+the browser can't open that page; copy the address from the address bar into PodStack. To skip that step, register
+your own application at [developers.eveonline.com](https://developers.eveonline.com) with the scopes PodStack uses
+and a callback like `http://127.0.0.1:8765/callback`, and enter its client id and callback in Settings → EVE login:
+PodStack then catches the login itself.
 
-**Why does PodStack use an embedded browser for authorization?**
+## License
 
-Adding many characters is much faster with an embedded login window than bouncing through your system browser. The login window loads EVE's own page, and the source is open so you can verify that credentials are not intercepted.
-
-**What is PodStack built with?**
-
-Electron and React.
-
-License
--------------------------
-AGPL v3.0, see [LICENSE.md](LICENSE.md).
+AGPL-3.0-only, like the original. Bundled fonts: Inter (OFL) and Material Icons (Apache 2.0), see
+[`assets/fonts/LICENSES.md`](assets/fonts/LICENSES.md).
