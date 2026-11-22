@@ -19,14 +19,14 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::OnceLock;
 
 /// Bumped whenever the converted files change shape, so caches written by an older PodStack are converted again.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 
 const LATEST_URL: &str = "https://developers.eveonline.com/static-data/tranquility/latest.jsonl";
 /// How often to ask CCP whether there's a newer build.
 const CHECK_HOURS: i64 = 6;
 
 /// The converted files, by name.
-pub const FILES: [&str; 4] = ["market_types.json", "market_groups.json", "universe.json", "industry.json"];
+pub const FILES: [&str; 5] = ["market_types.json", "market_groups.json", "universe.json", "industry.json", "pi.json"];
 
 /// Data that can be replaced while the app runs. Reading it is as cheap as a static: the current value is leaked on
 /// purpose, because references handed out earlier may still be in use when a newer build replaces it (that happens
@@ -133,6 +133,7 @@ fn reload_all() {
     crate::sde::MARKET.reload();
     crate::sde::MAP.reload();
     crate::blueprints::INDUSTRY.reload();
+    crate::pi::PI.reload();
 }
 
 /// Asks CCP for its latest build and, when it's newer than the data in use, downloads and converts it and swaps it
@@ -274,6 +275,8 @@ struct RawType {
     volume: Option<f64>,
     #[serde(rename = "metaGroupID", default)]
     meta_group: Option<i64>,
+    #[serde(default)]
+    capacity: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -515,6 +518,7 @@ fn convert(open: &Opener, out: &Path, info: &BuildInfo) -> Result<(), String> {
         }
     })?;
     systems.sort_by_key(|s| s.0);
+    let known_systems: HashSet<i64> = systems.iter().map(|s| s.0).collect();
     write("universe.json", &serde_json::json!({ "regions": regions, "systems": systems }))?;
 
     // industry
@@ -566,6 +570,8 @@ fn convert(open: &Opener, out: &Path, info: &BuildInfo) -> Result<(), String> {
                 && (t.group == DECRYPTOR_GROUP
                     || STRUCTURE_GROUPS.contains(&t.group)
                     || INDUSTRY_SKILL_GROUPS.contains(&t.group)
+                    || PI_COMMODITY_GROUPS.contains(&t.group)
+                    || PI_PIN_GROUPS.contains(&t.group)
                     || g.is_some_and(|g| g.name.en.starts_with("Structure ") && g.name.en.contains("Rig")))
         })
         .map(|t| t.id)
@@ -679,8 +685,140 @@ fn convert(open: &Opener, out: &Path, info: &BuildInfo) -> Result<(), String> {
 
     let industry = IndustryFile { blueprints, types: type_rows, groups: group_rows, filters, structures, rigs, decryptors, skill_bonuses };
     write("industry.json", &industry)?;
+
+    // planetary industry
+    let mut schematics = Vec::new();
+    each::<RawSchematic>(open, "planetSchematics", |sc| {
+        let inputs = sc.types.iter().filter(|t| t.is_input).map(|t| (t.id, t.quantity)).collect();
+        if let Some(out) = sc.types.iter().find(|t| !t.is_input) {
+            schematics.push((sc.id, sc.name.en, sc.cycle_time, inputs, (out.id, out.quantity), sc.pins));
+        }
+    })?;
+    schematics.sort_by_key(|s| s.0);
+    let mut commodities: Vec<(i64, String, i64, f64, f64)> = types
+        .values()
+        .filter(|t| t.published && PI_COMMODITY_GROUPS.contains(&t.group))
+        .map(|t| {
+            // Customs offices tax a fixed value per unit (its "tax multiplier"), not the market price.
+            let tax_base = dogma.get(&t.id).and_then(|d| d.get("exportTaxMultiplier")).copied().unwrap_or(0.0);
+            (t.id, t.name.en.clone(), t.group, t.volume.unwrap_or(0.0), tax_base)
+        })
+        .collect();
+    commodities.sort_by_key(|c| c.0);
+    let mut pins: Vec<PiPinFile> = types
+        .values()
+        .filter(|t| t.published && PI_PIN_GROUPS.contains(&t.group))
+        .map(|t| {
+            let d = dogma.get(&t.id);
+            let v = |n: &str| d.and_then(|d| d.get(n)).copied();
+            PiPinFile {
+                id: t.id,
+                name: t.name.en.clone(),
+                group: t.group,
+                planet_type: v("planetRestriction").map(|p| p as i64),
+                capacity: t.capacity.unwrap_or(0.0),
+                cpu: v("cpuLoad").or(v("cpuOutput")).unwrap_or(0.0),
+                power: v("powerLoad").or(v("powerOutput")).unwrap_or(0.0),
+                export_tax: v("exportTax"),
+                import_tax: v("importTax"),
+            }
+        })
+        .collect();
+    pins.sort_by_key(|p| p.id);
+    let mut planet_types: Vec<(i64, String)> =
+        types.values().filter(|t| t.group == PLANET_GROUP).map(|t| (t.id, t.name.en.clone())).collect();
+    planet_types.sort();
+    // Every planet in known space by system: (system, [(planet type, celestial index)]).
+    let mut by_system: BTreeMap<i64, Vec<(i64, i64)>> = BTreeMap::new();
+    each::<RawPlanetRow>(open, "mapPlanets", |pl| {
+        if known_systems.contains(&pl.system) {
+            by_system.entry(pl.system).or_default().push((pl.type_id, pl.index));
+        }
+    })?;
+    for v in by_system.values_mut() {
+        v.sort_by_key(|p| p.1);
+    }
+    let pi = PiFile { schematics, commodities, pins, planet_types, planets: by_system.into_iter().collect() };
+    write("pi.json", &pi)?;
+
     write("build.json", info)?;
     Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawSchematic {
+    #[serde(rename = "_key")]
+    id: i64,
+    #[serde(default)]
+    name: Names,
+    #[serde(default)]
+    cycle_time: i64,
+    #[serde(default)]
+    pins: Vec<i64>,
+    #[serde(default)]
+    types: Vec<RawSchematicType>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawSchematicType {
+    #[serde(rename = "_key")]
+    id: i64,
+    #[serde(default)]
+    is_input: bool,
+    quantity: i64,
+}
+
+#[derive(Deserialize)]
+struct RawPlanetRow {
+    #[serde(rename = "solarSystemID")]
+    system: i64,
+    #[serde(rename = "typeID")]
+    type_id: i64,
+    #[serde(rename = "celestialIndex", default)]
+    index: i64,
+}
+
+/// Raw resources, P1-P4 commodities: Planet Solid / Liquid-Gas / Organic raw resources, Basic, Refined,
+/// Specialized and Advanced commodities.
+pub const PI_COMMODITY_GROUPS: [i64; 7] = [1032, 1033, 1035, 1042, 1034, 1040, 1041];
+/// Extractors, command centers, processors, storage, launchpads, extractor control units.
+pub const PI_PIN_GROUPS: [i64; 6] = [1026, 1027, 1028, 1029, 1030, 1063];
+const PLANET_GROUP: i64 = 7;
+
+/// (schematic, name, cycle seconds, inputs (type, quantity), output (type, quantity), factory pin types)
+pub type SchematicRow = (i64, String, i64, Vec<(i64, i64)>, (i64, i64), Vec<i64>);
+
+/// The planetary industry file: see `pi::PiData`.
+#[derive(Serialize, Deserialize, Default)]
+pub struct PiFile {
+    /// (schematic, name, cycle seconds, inputs (type, quantity), output (type, quantity), factory pin types)
+    pub schematics: Vec<SchematicRow>,
+    /// (type, name, group, volume m³, customs tax base value per unit)
+    pub commodities: Vec<(i64, String, i64, f64, f64)>,
+    pub pins: Vec<PiPinFile>,
+    /// (type, name), e.g. (11, "Planet (Temperate)")
+    pub planet_types: Vec<(i64, String)>,
+    /// (system, [(planet type, celestial index)])
+    pub planets: Vec<(i64, Vec<(i64, i64)>)>,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+pub struct PiPinFile {
+    pub id: i64,
+    pub name: String,
+    pub group: i64,
+    /// The planet type it can be built on.
+    pub planet_type: Option<i64>,
+    /// m³ it holds (storage, launchpads, command centers).
+    pub capacity: f64,
+    /// CPU and power it uses (a command center: provides).
+    pub cpu: f64,
+    pub power: f64,
+    /// Percent of the tax base charged for exports and imports (launchpads, command centers).
+    pub export_tax: Option<f64>,
+    pub import_tax: Option<f64>,
 }
 
 /// Serializes the different tables through one `write` closure.

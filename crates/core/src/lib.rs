@@ -13,6 +13,7 @@ pub mod esi;
 pub mod features;
 pub mod fmt;
 pub mod market;
+pub mod pi;
 pub mod sde;
 pub mod sso;
 pub mod static_data;

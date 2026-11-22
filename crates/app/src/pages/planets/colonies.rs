@@ -1,4 +1,4 @@
-//! Planetary Industry: every character's colonies as cards, each with its extractors (and when they stop), what its
+//! Planetary Industry → Colonies: every character's colonies as cards, each with its extractors (and when they stop), what its
 //! factories make and what's stored there. Colonies needing attention (expired extractors) come first.
 //! The character tab (`pages/character/planets.rs`) shows the same view for one character.
 
@@ -27,6 +27,7 @@ const CSS: &str = r#"
 
 pub fn build(ctx: &Ctx) -> Page {
     let body = w::page_body();
+    body.append(&super::tab_bar(ctx, super::Tab::Colonies));
     let chars = ctx.core().characters();
     let no_scope = chars.iter().filter(|c| scope_failed(c, "planets")).count();
     if no_scope > 0 {
@@ -41,6 +42,7 @@ pub fn build(ctx: &Ctx) -> Page {
 }
 
 /// Extractors whose program has ended, across all characters.
+#[allow(dead_code)] // the page's badge goes through planets::nav_badge
 pub fn nav_badge(core: &podstack_core::Core) -> Option<u32> {
     Some(ind::count_expired_extractors(&core.characters(), Utc::now()) as u32)
 }

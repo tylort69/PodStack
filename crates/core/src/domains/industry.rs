@@ -162,6 +162,34 @@ pub struct Colony {
     /// Everything stored on the planet (storage, launchpads, factory buffers), summed by type, most first.
     #[serde(default)]
     pub storage: Vec<Stored>,
+    /// Every structure of the colony with what it holds (for storage fill and factory buffers).
+    #[serde(default)]
+    pub pins: Vec<ColonyPin>,
+    /// How products move between structures.
+    #[serde(default)]
+    pub routes: Vec<ColonyRoute>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ColonyPin {
+    pub pin_id: i64,
+    /// The structure type (e.g. a Barren Launchpad).
+    pub type_id: i64,
+    #[serde(default)]
+    pub schematic_id: Option<i64>,
+    /// (type, units) held.
+    #[serde(default)]
+    pub contents: Vec<(i64, i64)>,
+    #[serde(default)]
+    pub last_cycle_start: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ColonyRoute {
+    pub source_pin_id: i64,
+    pub destination_pin_id: i64,
+    pub content_type_id: i64,
+    pub quantity: f64,
 }
 
 impl Colony {
@@ -287,6 +315,8 @@ pub struct RawColony {
 pub struct RawLayout {
     #[serde(default)]
     pub pins: Vec<RawPin>,
+    #[serde(default)]
+    pub routes: Vec<ColonyRoute>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -306,6 +336,8 @@ pub struct RawPin {
     pub extractor_details: Option<RawExtractor>,
     #[serde(default)]
     pub factory_details: Option<RawFactory>,
+    #[serde(default)]
+    pub last_cycle_start: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -388,6 +420,18 @@ pub fn build_colony(raw: &RawColony, layout: &RawLayout) -> Colony {
         extractors,
         factories,
         storage,
+        pins: layout
+            .pins
+            .iter()
+            .map(|p| ColonyPin {
+                pin_id: p.pin_id,
+                type_id: p.type_id,
+                schematic_id: p.factory_details.as_ref().map(|f| f.schematic_id).or(p.schematic_id),
+                contents: p.contents.iter().map(|c| (c.type_id, c.amount)).collect(),
+                last_cycle_start: p.last_cycle_start,
+            })
+            .collect(),
+        routes: layout.routes.clone(),
     }
 }
 
