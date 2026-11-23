@@ -4,6 +4,7 @@ pub mod about;
 pub mod asset_search;
 pub mod character;
 pub mod contracts;
+pub mod doctrines;
 pub mod fit_planner;
 pub mod industry;
 pub mod market;
@@ -26,6 +27,7 @@ pub fn build(ctx: &Ctx, route: Route) -> Page {
         Route::QueueHealth => queue_health::build(ctx),
         Route::SpFarming => sp_farming::build(ctx),
         Route::Contracts => contracts::build(ctx),
+        Route::Doctrines => doctrines::build(ctx),
         Route::AssetSearch => asset_search::build(ctx),
         Route::Market => market::build(ctx),
         Route::Industry => industry::build(ctx),

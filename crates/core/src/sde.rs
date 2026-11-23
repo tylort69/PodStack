@@ -165,7 +165,6 @@ pub struct ShipSkin {
 #[derive(Deserialize)]
 struct ShipsFile {
     ships: HashMap<String, ShipInfo>,
-    races: HashMap<String, String>,
 }
 
 pub struct Ships {
@@ -173,13 +172,41 @@ pub struct Ships {
     pub races: HashMap<i64, String>,
 }
 
-pub static SHIPS: LazyLock<Ships> = LazyLock::new(|| {
-    let f: ShipsFile = serde_json::from_str(include_str!("../../../data/ships.json")).expect("data/ships.json");
+/// Every ship: from CCP's latest static data (hulls, classes, races, tech levels and the skills to fly them) once
+/// downloaded, else the bundled snapshot. SKINs come from the bundled `ships.json`, which CCP's export doesn't name.
+pub static SHIPS: Live<Ships> = Live::new(load_ships);
+
+fn load_ships() -> Ships {
+    #[derive(Deserialize)]
+    struct File {
+        races: HashMap<String, String>,
+        ships: Vec<(i64, String, i64, String, Option<i64>, String, Vec<(i64, u8)>)>,
+    }
+    let legacy: ShipsFile = serde_json::from_str(include_str!("../../../data/ships.json")).expect("data/ships.json");
+    let mut skins: HashMap<i64, Vec<ShipSkin>> = legacy.ships.into_values().map(|s| (s.type_id, s.skins)).collect();
+    let f: File = serde_json::from_str(&static_data::read("ship_types.json", include_str!("../../../data/ship_types.json")))
+        .expect("ship_types.json");
     Ships {
-        by_id: f.ships.into_values().map(|s| (s.type_id, s)).collect(),
+        by_id: f
+            .ships
+            .into_iter()
+            .map(|(id, name, group_id, group, race_id, meta, skills)| {
+                let info = ShipInfo {
+                    type_id: id,
+                    name,
+                    group_id,
+                    group,
+                    race_id,
+                    meta,
+                    skills: skills.into_iter().map(|(id, level)| RequiredSkill { id, level }).collect(),
+                    skins: skins.remove(&id).unwrap_or_default(),
+                };
+                (id, info)
+            })
+            .collect(),
         races: f.races.into_iter().filter_map(|(k, v)| k.parse().ok().map(|k| (k, v))).collect(),
     }
-});
+}
 
 /// Attribute implant slots 1-5 and the attribute each boosts.
 pub const IMPLANT_SLOTS: [(u8, Attribute, &str); 5] = [

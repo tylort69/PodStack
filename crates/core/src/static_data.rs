@@ -19,14 +19,14 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::OnceLock;
 
 /// Bumped whenever the converted files change shape, so caches written by an older PodStack are converted again.
-pub const FORMAT: u32 = 3;
+pub const FORMAT: u32 = 4;
 
 const LATEST_URL: &str = "https://developers.eveonline.com/static-data/tranquility/latest.jsonl";
 /// How often to ask CCP whether there's a newer build.
 const CHECK_HOURS: i64 = 6;
 
 /// The converted files, by name.
-pub const FILES: [&str; 5] = ["market_types.json", "market_groups.json", "universe.json", "industry.json", "pi.json"];
+pub const FILES: [&str; 6] = ["market_types.json", "market_groups.json", "universe.json", "industry.json", "pi.json", "ship_types.json"];
 
 /// Data that can be replaced while the app runs. Reading it is as cheap as a static: the current value is leaked on
 /// purpose, because references handed out earlier may still be in use when a newer build replaces it (that happens
@@ -277,7 +277,15 @@ struct RawType {
     meta_group: Option<i64>,
     #[serde(default)]
     capacity: Option<f64>,
+    #[serde(rename = "raceID", default)]
+    race: Option<i64>,
 }
+
+/// Category of every ship group.
+const SHIP_CATEGORY: i64 = 6;
+
+/// A ship in `ship_types.json`: (type id, name, group id, group name, race id, meta group name, [(skill, level)]).
+type ShipRow = (i64, String, i64, String, Option<i64>, String, Vec<(i64, i64)>);
 
 #[derive(Deserialize)]
 struct RawGroup {
@@ -301,6 +309,15 @@ struct RawMarketGroup {
 
 #[derive(Deserialize)]
 struct RawRegion {
+    #[serde(rename = "_key")]
+    id: i64,
+    #[serde(default)]
+    name: Names,
+}
+
+/// Any SDE row that's just an id and a name.
+#[derive(Deserialize)]
+struct RawNamed {
     #[serde(rename = "_key")]
     id: i64,
     #[serde(default)]
@@ -594,6 +611,7 @@ fn convert(open: &Opener, out: &Path, info: &BuildInfo) -> Result<(), String> {
                     || INDUSTRY_SKILL_GROUPS.contains(&t.group)
                     || PI_COMMODITY_GROUPS.contains(&t.group)
                     || PI_PIN_GROUPS.contains(&t.group)
+                    || g.is_some_and(|g| g.category == SHIP_CATEGORY)
                     || g.is_some_and(|g| g.name.en.starts_with("Structure ") && g.name.en.contains("Rig")))
         })
         .map(|t| t.id)
@@ -762,6 +780,40 @@ fn convert(open: &Opener, out: &Path, info: &BuildInfo) -> Result<(), String> {
     }
     let pi = PiFile { schematics, commodities, pins, planet_types, planets: by_system.into_iter().collect() };
     write("pi.json", &pi)?;
+
+    // ships: hull, class, race, tech level and the skills to fly them (for doctrines and the ship browser)
+    let mut meta_names: HashMap<i64, String> = HashMap::new();
+    each::<RawNamed>(open, "metaGroups", |m| {
+        meta_names.insert(m.id, m.name.en);
+    })?;
+    let mut races: BTreeMap<i64, String> = BTreeMap::new();
+    each::<RawNamed>(open, "races", |r| {
+        races.insert(r.id, r.name.en);
+    })?;
+    let skill_attrs: Vec<(String, String)> = crate::features::fitting::REQUIRED_SKILL_ATTRIBUTES
+        .iter()
+        .filter_map(|(s, l)| Some((attr_names.get(s)?.clone(), attr_names.get(l)?.clone())))
+        .collect();
+    let mut ships: Vec<ShipRow> = types
+        .values()
+        .filter(|t| t.published && groups.get(&t.group).is_some_and(|g| g.category == SHIP_CATEGORY))
+        .map(|t| {
+            let attrs = dogma.get(&t.id);
+            let skills = skill_attrs
+                .iter()
+                .filter_map(|(s, l)| {
+                    let a = attrs?;
+                    let (id, level) = (*a.get(s)? as i64, *a.get(l)? as i64);
+                    (id > 0 && level > 0).then_some((id, level.min(5)))
+                })
+                .collect();
+            let group = groups.get(&t.group).map(|g| g.name.en.clone()).unwrap_or_default();
+            let meta = t.meta_group.and_then(|m| meta_names.get(&m).cloned()).unwrap_or_else(|| "Tech I".into());
+            (t.id, t.name.en.clone(), t.group, group, t.race, meta, skills)
+        })
+        .collect();
+    ships.sort_by_key(|s| s.0);
+    write("ship_types.json", &serde_json::json!({ "races": races, "ships": ships }))?;
 
     write("build.json", info)?;
     Ok(())

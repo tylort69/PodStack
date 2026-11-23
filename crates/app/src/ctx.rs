@@ -109,6 +109,7 @@ pub enum Route {
     QueueHealth,
     SpFarming,
     Contracts,
+    Doctrines,
     AssetSearch,
     Market,
     Industry,
@@ -120,10 +121,11 @@ pub enum Route {
 
 impl Route {
     /// Top-level destinations in the navigation drawer: (route, label, icon).
-    pub const DESTINATIONS: [(Route, &'static str, &'static str); 10] = [
+    pub const DESTINATIONS: [(Route, &'static str, &'static str); 11] = [
         (Route::Overview, "Overview", "dashboard"),
         (Route::SkillBrowser, "Skill Browser", "account_tree"),
         (Route::ShipBrowser, "Ship Browser", "rocket_launch"),
+        (Route::Doctrines, "Doctrines", "military_tech"),
         (Route::QueueHealth, "Queue Health", "monitor_heart"),
         (Route::SpFarming, "SP Farming", "opacity"),
         (Route::Contracts, "Contracts", "assignment"),

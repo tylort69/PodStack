@@ -13,6 +13,8 @@ pub mod plan_tools;
 
 // Ship browser and fit planner
 pub mod fitting;
+// Doctrines: groups, doctrines and their fits, who can fly what (`doctrines`)
+pub mod doctrines;
 
 // Mail bodies, contracts and wallet helpers
 pub mod comms;
