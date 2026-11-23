@@ -702,3 +702,340 @@ mod tests {
         assert!(text.starts_with("Spaceship Command 1\r\nMinmatar Frigate 1") && text.ends_with("Minmatar Frigate 3"), "{text}");
     }
 }
+
+// =====================================================================================================================
+// ---------- Pilots and Ships tabs: who flies what, by character and by hull class ----------
+// =====================================================================================================================
+
+use crate::sde::MARKET;
+
+/// Every fit of a group and its subgroups (every fit when `group_id` is None), with its full group path.
+pub fn fits_in<'a>(doc: &'a DoctrineDoc, group_id: Option<&str>) -> Vec<(Vec<&'a str>, &'a Doctrine, &'a DoctrineFit)> {
+    let Some(id) = group_id else { return doc.all_fits() };
+    let Some(group) = doc.group(id) else { return Vec::new() };
+    let wanted: BTreeSet<&str> = group.all_doctrines().iter().map(|d| d.id.as_str()).collect();
+    doc.all_fits().into_iter().filter(|(_, d, _)| wanted.contains(d.id.as_str())).collect()
+}
+
+/// Every doctrine of a group and its subgroups (every doctrine when `group_id` is None), with its full group path.
+pub fn doctrines_in<'a>(doc: &'a DoctrineDoc, group_id: Option<&str>) -> Vec<(Vec<&'a str>, &'a Doctrine)> {
+    let Some(id) = group_id else { return doc.all_doctrines() };
+    let Some(group) = doc.group(id) else { return Vec::new() };
+    let wanted: BTreeSet<&str> = group.all_doctrines().iter().map(|d| d.id.as_str()).collect();
+    doc.all_doctrines().into_iter().filter(|(_, d)| wanted.contains(d.id.as_str())).collect()
+}
+
+/// A character against one fit, with where the fit sits.
+#[derive(Clone, Debug)]
+pub struct Standing<'a> {
+    pub path: Vec<&'a str>,
+    pub doctrine: &'a Doctrine,
+    pub fit: &'a DoctrineFit,
+    pub check: FitCheck,
+}
+
+/// A character against a set of fits, sorted for showing.
+#[derive(Clone, Debug, Default)]
+pub struct PilotStandings<'a> {
+    /// Fits it can fly as they are, in the document's order.
+    pub ready: Vec<Standing<'a>>,
+    /// Fits whose hull it can fly but not everything fitted, quickest to finish first.
+    pub hull_only: Vec<Standing<'a>>,
+    /// Fits whose hull it can't fly yet, quickest to train first.
+    pub missing: Vec<Standing<'a>>,
+}
+
+/// Checks a character against fits (see [`fits_in`]). A character whose skills aren't loaded gets nothing.
+pub fn pilot_standings<'a>(c: &Character, fits: &[(Vec<&'a str>, &'a Doctrine, &'a DoctrineFit)]) -> PilotStandings<'a> {
+    let mut out = PilotStandings::default();
+    if c.skills.is_none() {
+        return out;
+    }
+    for (path, doctrine, fit) in fits {
+        let s = Standing { path: path.clone(), doctrine, fit, check: check(c, fit) };
+        match s.check.readiness {
+            Readiness::Ready => out.ready.push(s),
+            Readiness::HullOnly => out.hull_only.push(s),
+            Readiness::Missing => out.missing.push(s),
+        }
+    }
+    out.hull_only.sort_by_key(|s| s.check.time_to_fit);
+    out.missing.sort_by_key(|s| s.check.time_to_fit);
+    out
+}
+
+impl PilotStandings<'_> {
+    /// Distinct doctrines with at least one fit ready.
+    pub fn doctrines_ready(&self) -> usize {
+        self.ready.iter().map(|s| s.doctrine.id.as_str()).collect::<BTreeSet<_>>().len()
+    }
+}
+
+/// One character against one doctrine (a cell of the pilots × doctrines matrix).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DoctrineCell {
+    pub fits: usize,
+    pub ready: usize,
+    pub hull_only: usize,
+    /// The best readiness over the doctrine's fits (None when it has none).
+    pub best: Option<Readiness>,
+    /// Training to the quickest fit not flyable yet (None when every fit is ready, or there are none).
+    pub closest: Option<Duration>,
+}
+
+pub fn doctrine_cell<'a>(checks: impl IntoIterator<Item = &'a FitCheck>) -> DoctrineCell {
+    let mut cell = DoctrineCell::default();
+    for c in checks {
+        cell.fits += 1;
+        match c.readiness {
+            Readiness::Ready => cell.ready += 1,
+            Readiness::HullOnly => cell.hull_only += 1,
+            Readiness::Missing => {}
+        }
+        cell.best = cell.best.max(Some(c.readiness));
+        if c.readiness != Readiness::Ready {
+            cell.closest = Some(cell.closest.map_or(c.time_to_fit, |t| t.min(c.time_to_fit)));
+        }
+    }
+    cell
+}
+
+/// Hull classes (CCP's ship groups) in sections, for the Ships tab.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HullSection {
+    pub name: String,
+    /// Class names, entry-level first.
+    pub classes: Vec<String>,
+}
+
+/// The section for hulls not on the market (capsules, event hulls).
+pub const OTHER_SECTION: &str = "Other";
+
+/// Skill points a fresh character needs to sit in a hull, prerequisites included: a measure of how far up the
+/// progression a hull is that follows CCP's data instead of a list of class names.
+pub fn sp_to_fly(ship: &ShipInfo) -> i64 {
+    let mut all: BTreeMap<i64, u8> = BTreeMap::new();
+    for r in &ship.skills {
+        for (id, l) in crate::training::with_prerequisites(r.id, r.level) {
+            let e = all.entry(id).or_insert(0);
+            *e = (*e).max(l);
+        }
+    }
+    all.into_iter().map(|(id, l)| SKILLS.get(id).map(|s| s.sp_for_level(l)).unwrap_or(0)).sum()
+}
+
+fn median<T: Ord + Copy>(mut v: Vec<T>) -> Option<T> {
+    v.sort();
+    v.get(v.len() / 2).copied()
+}
+
+/// The top-level market section a hull is sold in ("Frigates", "Capital Ships", …).
+fn market_section(s: &ShipInfo) -> Option<String> {
+    let t = MARKET.get(s.type_id)?;
+    let path = MARKET.path(t.group);
+    // the path starts at the market's "Ships" root
+    path.get(1).or(path.first()).map(|g| g.name.clone())
+}
+
+/// Every hull class in sections, ordered from small to big. Everything comes from CCP's static data:
+///
+/// - a section is a top-level group of the market's ship tree ("Frigates", "Capital Ships", "Mining Barges", …),
+///   and a class goes in the section most of its hulls are sold in. Some market sections hold one-off hulls of
+///   many classes ("Special Edition Ships"); a section where most classes are mostly sold elsewhere is treated as
+///   such a catch-all and only keeps classes found nowhere else;
+/// - sections are ordered by the median packaged volume of their hulls (the market's own measure of hull size, so
+///   shuttles and frigates come first and capitals last), catch-alls after them, then hulls not on the market;
+/// - classes inside a section are ordered by the median skill points a new character needs to fly their hulls
+///   ([`sp_to_fly`]): the Tech I class first, then its specialisations.
+pub fn hull_sections() -> Vec<HullSection> {
+    let ships: Vec<(&ShipInfo, Option<String>)> = SHIPS.by_id.values().map(|s| (s, market_section(s))).collect();
+    let mut by_class: BTreeMap<&str, Vec<&(&ShipInfo, Option<String>)>> = BTreeMap::new();
+    for s in &ships {
+        by_class.entry(s.0.group.as_str()).or_default().push(s);
+    }
+    let majority = |hulls: &[&(&ShipInfo, Option<String>)], skip: &BTreeSet<String>| -> Option<String> {
+        let mut n: BTreeMap<&str, usize> = BTreeMap::new();
+        for (_, sec) in hulls {
+            if let Some(sec) = sec.as_deref().filter(|s| !skip.contains(*s)) {
+                *n.entry(sec).or_default() += 1;
+            }
+        }
+        // most hulls; ties go to the first name, so the result doesn't depend on hash order
+        n.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0))).map(|(s, _)| s.to_string())
+    };
+    // classes per market section
+    let mut held: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (s, sec) in &ships {
+        if let Some(sec) = sec {
+            held.entry(sec.as_str()).or_default().insert(s.group.as_str());
+        }
+    }
+    // whether a section is where most of its classes are mostly sold, when the `skip` sections don't count
+    let leads = |sec: &str, skip: &BTreeSet<String>| -> bool {
+        let classes = &held[sec];
+        let own = classes.iter().filter(|c| majority(&by_class[*c], skip).as_deref() == Some(sec)).count();
+        own * 2 >= classes.len()
+    };
+    // Catch-alls: sections that don't lead their classes. A small section whose hulls are mostly outnumbered by the
+    // catch-all's (a class with more special editions than regular hulls) comes back once the other catch-alls
+    // don't count.
+    let first: BTreeSet<String> = held.keys().filter(|s| !leads(s, &BTreeSet::new())).map(|s| s.to_string()).collect();
+    let catch_all: BTreeSet<String> = first
+        .iter()
+        .filter(|s| {
+            let others: BTreeSet<String> = first.iter().filter(|o| o != s).cloned().collect();
+            !leads(s, &others)
+        })
+        .cloned()
+        .collect();
+    let raw: BTreeMap<&str, Option<String>> = by_class.iter().map(|(c, h)| (*c, majority(h, &BTreeSet::new()))).collect();
+
+    let mut sections: BTreeMap<String, Vec<(i64, &str)>> = BTreeMap::new();
+    for (class, hulls) in &by_class {
+        let sec = majority(hulls, &catch_all).or_else(|| raw[class].clone()).unwrap_or_else(|| OTHER_SECTION.to_string());
+        let sp = median(hulls.iter().map(|(s, _)| sp_to_fly(s)).collect()).unwrap_or(0);
+        sections.entry(sec).or_default().push((sp, class));
+    }
+    // median packaged volume (m³ × 100, to sort as integers); None for hulls off the market
+    let size = |sec: &str| -> Option<i64> {
+        median(
+            ships
+                .iter()
+                .filter(|(_, s)| s.as_deref() == Some(sec))
+                .filter_map(|(s, _)| MARKET.get(s.type_id))
+                .map(|t| (t.volume * 100.0) as i64)
+                .collect(),
+        )
+    };
+    let mut out: Vec<((u8, i64), HullSection)> = sections
+        .into_iter()
+        .map(|(name, mut classes)| {
+            classes.sort();
+            let rank = match size(&name) {
+                None => (2, 0),
+                Some(v) if catch_all.contains(&name) => (1, v),
+                Some(v) => (0, v),
+            };
+            (rank, HullSection { classes: classes.into_iter().map(|(_, c)| c.to_string()).collect(), name })
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.name.cmp(&b.1.name)));
+    out.into_iter().map(|(_, s)| s).collect()
+}
+
+/// The tech levels hulls come in ("Tech I", "Tech II", "Faction", …), in CCP's meta group order.
+pub fn tech_levels() -> Vec<String> {
+    let mut order: BTreeMap<&str, i64> = BTreeMap::new();
+    for s in SHIPS.by_id.values().filter(|s| !s.meta.is_empty()) {
+        let id = MARKET.get(s.type_id).and_then(|t| t.meta_group).unwrap_or(i64::MAX);
+        let e = order.entry(s.meta.as_str()).or_insert(i64::MAX);
+        *e = (*e).min(id);
+    }
+    let mut v: Vec<(i64, &str)> = order.into_iter().map(|(m, id)| (id, m)).collect();
+    v.sort();
+    v.into_iter().map(|(_, m)| m.to_string()).collect()
+}
+
+#[cfg(test)]
+mod roster_tests {
+    use super::*;
+    use crate::domains::skills::{Skill, SkillsData};
+
+    fn fit(id: &str, ship: i64, items: Vec<FitItem>) -> DoctrineFit {
+        DoctrineFit { id: id.into(), name: id.into(), ship_id: ship, items, ..Default::default() }
+    }
+
+    fn skilled(levels: &[(i64, u8)]) -> Character {
+        let mut c = Character::new(1);
+        c.skills = Some(SkillsData {
+            skills: levels.iter().map(|&(id, l)| Skill { skill_id: id, trained_skill_level: l, active_skill_level: l, ..Default::default() }).collect(),
+            ..Default::default()
+        });
+        c
+    }
+
+    #[test]
+    fn standings_by_group_and_readiness() {
+        // Rifter: Minmatar Frigate 1; its module needs Minmatar Frigate at `module_level` (a stand-in)
+        let rifter = |id: &str, module_level: u8| {
+            fit(
+                id,
+                587,
+                vec![
+                    FitItem { type_id: 587, name: "Rifter".into(), category: "Ship".into(), quantity: 1, skills: vec![(3329, 1)] },
+                    FitItem { type_id: 1, name: "Thing".into(), category: "Module".into(), quantity: 1, skills: vec![(3329, module_level)] },
+                ],
+            )
+        };
+        let caps = Group {
+            id: "caps".into(),
+            name: "Capitals".into(),
+            doctrines: vec![Doctrine { id: "d2".into(), name: "Far".into(), fits: vec![rifter("far", 5)], ..Default::default() }],
+            ..Default::default()
+        };
+        let doc = DoctrineDoc {
+            groups: vec![Group {
+                id: "init".into(),
+                name: "Init".into(),
+                groups: vec![caps],
+                doctrines: vec![Doctrine { id: "d1".into(), name: "Near".into(), fits: vec![rifter("easy", 1), rifter("mid", 3)], ..Default::default() }],
+                ..Default::default()
+            }],
+        };
+        assert_eq!(fits_in(&doc, None).len(), 3);
+        let sub = fits_in(&doc, Some("caps"));
+        assert_eq!(sub.len(), 1);
+        assert_eq!(sub[0].0, ["Init", "Capitals"], "full path, not relative to the group");
+        assert_eq!(doctrines_in(&doc, Some("init")).len(), 2);
+        assert!(fits_in(&doc, Some("nope")).is_empty());
+
+        let c = skilled(&[(3327, 1), (3329, 1)]);
+        let s = pilot_standings(&c, &fits_in(&doc, None));
+        assert_eq!(s.ready.iter().map(|s| s.fit.id.as_str()).collect::<Vec<_>>(), ["easy"]);
+        assert_eq!(s.hull_only.iter().map(|s| s.fit.id.as_str()).collect::<Vec<_>>(), ["mid", "far"], "quickest first");
+        assert_eq!(s.doctrines_ready(), 1);
+        assert!(pilot_standings(&Character::new(2), &fits_in(&doc, None)).ready.is_empty(), "no skills, no standings");
+
+        let checks: Vec<FitCheck> = s.ready.iter().chain(&s.hull_only).filter(|x| x.doctrine.id == "d1").map(|x| x.check.clone()).collect();
+        let cell = doctrine_cell(&checks);
+        assert_eq!((cell.fits, cell.ready, cell.hull_only, cell.best), (2, 1, 1, Some(Readiness::Ready)));
+        assert_eq!(cell.closest, Some(s.hull_only[0].check.time_to_fit));
+        assert_eq!(doctrine_cell(std::iter::empty()), DoctrineCell::default());
+    }
+
+    #[test]
+    fn hull_sections_follow_size_and_progression() {
+        let sections = hull_sections();
+        let pos = |class: &str| sections.iter().position(|s| s.classes.iter().any(|c| c == class)).unwrap_or_else(|| panic!("{class} missing"));
+        let section = |class: &str| sections[pos(class)].name.clone();
+        // every class lands in exactly one section
+        let n: usize = sections.iter().map(|s| s.classes.len()).sum();
+        assert_eq!(n, SHIPS.by_id.values().map(|s| s.group.as_str()).collect::<BTreeSet<_>>().len());
+        assert!(pos("Frigate") < pos("Cruiser") && pos("Cruiser") < pos("Battleship") && pos("Battleship") < pos("Dreadnought"));
+        assert_eq!(section("Heavy Assault Cruiser"), section("Cruiser"));
+        assert_eq!(section("Dreadnought"), section("Titan"));
+        // a class with one special-edition hull still sits with its own kind
+        assert_eq!(section("Assault Frigate"), section("Frigate"));
+        assert_eq!(section("Corvette"), "Corvettes");
+        // the Tech I class leads its section
+        assert_eq!(sections[pos("Frigate")].classes[0], "Frigate");
+        assert_eq!(sections[pos("Battleship")].classes[0], "Battleship");
+        // hulls off the market come last
+        assert_eq!(sections.last().map(|s| s.name.as_str()), Some(OTHER_SECTION));
+        assert_eq!(section("Capsule"), OTHER_SECTION);
+    }
+
+    #[test]
+    fn tech_levels_in_meta_order() {
+        let t = tech_levels();
+        assert_eq!(t.first().map(String::as_str), Some("Tech I"));
+        assert!(t.iter().position(|m| m == "Tech II") < t.iter().position(|m| m == "Tech III"));
+        assert!(t.contains(&"Faction".to_string()));
+    }
+
+    #[test]
+    fn sp_to_fly_counts_prerequisites() {
+        // Rifter: Minmatar Frigate I (rank 2) after Spaceship Command I (rank 1)
+        assert_eq!(sp_to_fly(&SHIPS.by_id[&587]), 500 + 250);
+    }
+}
