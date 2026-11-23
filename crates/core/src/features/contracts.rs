@@ -787,6 +787,341 @@ pub fn exposure<'a>(contracts: impl IntoIterator<Item = &'a Contract>, mine: &Mi
     e
 }
 
+// ---------- scopes, roles and filters ----------
+
+/// Whose figures to show: everyone's together, or one character's or corporation's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Scope {
+    #[default]
+    All,
+    Of(Party),
+}
+
+impl Scope {
+    /// "all", "c:<id>" or "corp:<id>", for remembering the choice.
+    pub fn key(self) -> String {
+        match self {
+            Scope::All => "all".into(),
+            Scope::Of(Party::Character(id)) => format!("c:{id}"),
+            Scope::Of(Party::Corporation(id)) => format!("corp:{id}"),
+        }
+    }
+    pub fn from_key(k: &str) -> Scope {
+        let id = |s: &str| s.parse::<i64>().ok();
+        if let Some(i) = k.strip_prefix("c:").and_then(id) {
+            Scope::Of(Party::Character(i))
+        } else if let Some(i) = k.strip_prefix("corp:").and_then(id) {
+            Scope::Of(Party::Corporation(i))
+        } else {
+            Scope::All
+        }
+    }
+    /// Whether a flow counts in this scope. Across all characters a contract between two of them is a transfer, so
+    /// it's left out unless the settings say otherwise; one character's own figures always keep it.
+    pub fn includes(self, f: &Flow, count_internal: bool) -> bool {
+        match self {
+            Scope::All => count_internal || !f.internal,
+            Scope::Of(p) => f.party == p,
+        }
+    }
+}
+
+impl Mine {
+    /// Only one party of the user's: for what one character or corporation has tied up.
+    pub fn only(&self, p: Party) -> Mine {
+        let mut m = Mine::default();
+        match p {
+            Party::Character(id) => {
+                if let Some(n) = self.characters.get(&id) {
+                    m.characters.insert(id, n.clone());
+                }
+            }
+            Party::Corporation(id) => {
+                if let Some(n) = self.corporations.get(&id) {
+                    m.corporations.insert(id, n.clone());
+                }
+            }
+        }
+        m
+    }
+    fn party_of(&self, id: i64) -> Option<Party> {
+        if self.characters.contains_key(&id) {
+            Some(Party::Character(id))
+        } else if self.corporations.contains_key(&id) {
+            Some(Party::Corporation(id))
+        } else {
+            None
+        }
+    }
+}
+
+/// How one of the user's characters or corporations is on a contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Role {
+    Issued,
+    Accepted,
+    /// Assigned to them, not accepted (yet) by them.
+    Assigned,
+}
+
+impl Role {
+    pub const ALL: [Role; 3] = [Role::Issued, Role::Accepted, Role::Assigned];
+    pub fn label(self) -> &'static str {
+        match self {
+            Role::Issued => "Issued",
+            Role::Accepted => "Accepted",
+            Role::Assigned => "Assigned",
+        }
+    }
+}
+
+/// Every way the user's parties are on a contract. A contract issued on behalf of a corporation counts as issued by
+/// both the corporation and the character who put it up.
+pub fn roles(c: &Contract, mine: &Mine) -> Vec<(Party, Role)> {
+    let mut out = Vec::new();
+    let (issuer, acceptor) = sides(c, mine);
+    if let Some(p) = issuer {
+        out.push((p, Role::Issued));
+    }
+    if c.for_corporation && mine.characters.contains_key(&c.issuer_id) {
+        out.push((Party::Character(c.issuer_id), Role::Issued));
+    }
+    if let Some(p) = acceptor {
+        out.push((p, Role::Accepted));
+    }
+    if let Some(p) = c.assignee_id.and_then(|id| mine.party_of(id)) {
+        if acceptor != Some(p) {
+            out.push((p, Role::Assigned));
+        }
+    }
+    out
+}
+
+/// Lower-case text a search looks through: type, status, title, parties, items and locations.
+pub fn search_text(c: &Contract) -> String {
+    let mut parts: Vec<&str> = vec![&c.kind, &c.status, &c.title, &c.issuer_name, &c.issuer_corporation_name, &c.availability];
+    parts.extend(c.assignee_name.as_deref());
+    parts.extend(c.acceptor_name.as_deref());
+    for p in [&c.start_location, &c.end_location].into_iter().flatten() {
+        parts.push(&p.name);
+        parts.extend(p.system_name.as_deref());
+        parts.extend(p.region_name.as_deref());
+    }
+    parts.extend(c.items.iter().map(|i| i.name.as_str()));
+    parts.join("\n").replace('_', " ").to_lowercase()
+}
+
+/// What the Contracts tab shows. Empty fields don't filter.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Filter {
+    /// Some(false): open only; Some(true): completed only.
+    pub completed: Option<bool>,
+    /// "item_exchange", "auction", "courier" or "loan".
+    pub kind: Option<String>,
+    pub party: Option<Party>,
+    pub role: Option<Role>,
+    pub availability: Option<String>,
+    /// On the contract's last date ([`Contract::last_date`]).
+    pub period: Option<Period>,
+    pub tag: Option<String>,
+    /// What it was for the user's parties (finished contracts only).
+    pub category: Option<Category>,
+    /// A character or corporation on the other end (issuer, issuer's corporation, assignee or acceptor).
+    pub counterparty: Option<i64>,
+    /// An item's market category ([`item_category`]).
+    pub item_category: Option<String>,
+    pub type_id: Option<i64>,
+    /// Words that must all appear in [`search_text`].
+    pub query: String,
+}
+
+impl Filter {
+    /// `flows` and `roles` are the contract's ([`flows`], [`roles`]), `tags` its tags.
+    pub fn matches(&self, c: &Contract, flows: &[Flow], roles: &[(Party, Role)], tags: &[String], now: DateTime<Utc>) -> bool {
+        if self.completed.is_some_and(|done| c.is_completed() != done) {
+            return false;
+        }
+        if self.kind.as_ref().is_some_and(|k| *k != c.kind) {
+            return false;
+        }
+        let role_ok = |r: &(Party, Role)| self.party.is_none_or(|p| r.0 == p) && self.role.is_none_or(|x| r.1 == x);
+        if (self.party.is_some() || self.role.is_some()) && !roles.iter().any(role_ok) {
+            return false;
+        }
+        if self.availability.as_ref().is_some_and(|a| *a != c.availability) {
+            return false;
+        }
+        if self.period.is_some_and(|p| !p.contains(c.last_date(), now)) {
+            return false;
+        }
+        if self.tag.as_ref().is_some_and(|t| !tags.contains(t)) {
+            return false;
+        }
+        if let Some(cat) = self.category {
+            if !flows.iter().any(|f| f.category == cat && self.party.is_none_or(|p| f.party == p)) {
+                return false;
+            }
+        }
+        if let Some(id) = self.counterparty {
+            let ids = [Some(c.issuer_id), Some(c.issuer_corporation_id), c.assignee_id, c.acceptor_id];
+            if !ids.contains(&Some(id)) {
+                return false;
+            }
+        }
+        if self.type_id.is_some_and(|t| !c.items.iter().any(|i| i.type_id == t)) {
+            return false;
+        }
+        if self.item_category.as_ref().is_some_and(|cat| !c.items.iter().any(|i| item_category(i.type_id) == *cat)) {
+            return false;
+        }
+        let q = self.query.trim().to_lowercase();
+        q.is_empty() || {
+            let text = search_text(c);
+            q.split_whitespace().all(|w| text.contains(w))
+        }
+    }
+}
+
+/// Totals per tag; a contract with two tags counts under both.
+pub fn by_tag<'a>(flows: impl IntoIterator<Item = &'a Flow>, tags: &BTreeMap<i64, Vec<String>>) -> Vec<(String, Totals)> {
+    let mut m: BTreeMap<String, Totals> = BTreeMap::new();
+    for f in flows {
+        for t in tags.get(&f.contract_id).into_iter().flatten() {
+            m.entry(t.clone()).or_default().add(f);
+        }
+    }
+    let mut v: Vec<(String, Totals)> = m.into_iter().collect();
+    v.sort_by(|a, b| (b.1.isk_in + b.1.isk_out).total_cmp(&(a.1.isk_in + a.1.isk_out)));
+    v
+}
+
+// ---------- price against value ----------
+
+impl Valuation {
+    /// The items that come with the contract, at the chosen orders.
+    pub fn included(&self, at_sell: bool) -> f64 {
+        if at_sell {
+            self.included_sell
+        } else {
+            self.included_buy
+        }
+    }
+    /// The items asked for in exchange, at the chosen orders.
+    pub fn asked(&self, at_sell: bool) -> f64 {
+        if at_sell {
+            self.asked_sell
+        } else {
+            self.asked_buy
+        }
+    }
+}
+
+/// What the acceptor pays against what the items they get are worth.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Deal {
+    /// ISK the acceptor pays (an exchange's price less its reward, an auction's winning bid).
+    pub price: f64,
+    /// The items they get less the items they give, at the hub.
+    pub worth: f64,
+}
+
+impl Deal {
+    /// Price as a share of the items' worth (0.9 = 10% under market); None when either is nothing.
+    pub fn ratio(&self) -> Option<f64> {
+        (self.worth > 0.0 && self.price > 0.0).then(|| self.price / self.worth)
+    }
+}
+
+/// The deal of an item exchange or auction, given what its included and asked-for items are worth.
+pub fn deal(c: &Contract, included: f64, asked: f64) -> Option<Deal> {
+    let price = match c.kind.as_str() {
+        "item_exchange" => c.price.unwrap_or(0.0) - c.reward.unwrap_or(0.0),
+        "auction" => c.auction_price().unwrap_or(0.0),
+        _ => return None,
+    };
+    Some(Deal { price, worth: included - asked })
+}
+
+// ---------- what needs the user ----------
+
+/// When an accepted courier has to be delivered.
+pub fn courier_due(c: &Contract) -> Option<DateTime<Utc>> {
+    let days = c.days_to_complete.filter(|d| *d > 0)?;
+    if c.kind == "courier" && c.status == "in_progress" {
+        Some(c.date_accepted? + Duration::days(days))
+    } else {
+        None
+    }
+}
+
+/// How close a hauled courier's deadline has to be to need the user.
+pub const DUE_SOON_HOURS: i64 = 24;
+
+/// Contracts waiting on the user: assigned to one of their characters or corporations and not accepted yet, and
+/// couriers they're hauling that are due within [`DUE_SOON_HOURS`] (or overdue).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Attention {
+    pub assigned: Vec<i64>,
+    pub due_soon: Vec<i64>,
+}
+
+impl Attention {
+    pub fn count(&self) -> usize {
+        self.assigned.len() + self.due_soon.len()
+    }
+}
+
+/// What of `contracts` waits on the user (each contract once).
+pub fn attention<'a>(contracts: impl IntoIterator<Item = &'a Contract>, mine: &Mine, now: DateTime<Utc>) -> Attention {
+    let mut a = Attention::default();
+    let mut seen = HashSet::new();
+    for c in contracts {
+        if !seen.insert(c.contract_id) {
+            continue;
+        }
+        if c.status == "outstanding" && c.date_expired > now && c.assignee_id.is_some_and(|id| mine.is_mine(id)) {
+            a.assigned.push(c.contract_id);
+        }
+        let hauling = c.acceptor_id.is_some_and(|id| mine.is_mine(id));
+        if hauling && courier_due(c).is_some_and(|due| due <= now + Duration::hours(DUE_SOON_HOURS)) {
+            a.due_soon.push(c.contract_id);
+        }
+    }
+    a
+}
+
+/// What waits on the user across the characters' current contract lists (their own and their corporations').
+pub fn attention_of(chars: &[Arc<Character>], now: DateTime<Utc>) -> Attention {
+    let mine = Mine::of(chars);
+    let listed = chars.iter().flat_map(|c| [&c.contracts, &c.corp_contracts]).flatten().flat_map(|d| d.contracts.iter());
+    attention(listed, &mine, now)
+}
+
+/// Whether a contract counts as open now: not completed, and not an unaccepted one past its expiry (the archive
+/// only learns it expired at the next refresh).
+pub fn is_open_now(c: &Contract, now: DateTime<Utc>) -> bool {
+    !c.is_completed() && !(c.status == "outstanding" && c.date_expired <= now)
+}
+
+// ---------- export ----------
+
+/// Rows as CSV (RFC 4180: fields with commas, quotes or line breaks are quoted).
+pub fn csv(rows: &[Vec<String>]) -> String {
+    let field = |s: &String| {
+        if s.contains([',', '"', '\n', '\r']) {
+            format!("\"{}\"", s.replace('"', "\"\""))
+        } else {
+            s.clone()
+        }
+    };
+    let mut out = String::new();
+    for r in rows {
+        out.push_str(&r.iter().map(field).collect::<Vec<_>>().join(","));
+        out.push_str("\r\n");
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -913,5 +1248,109 @@ mod tests {
         listed.price = Some(3e8);
         let e = exposure([&haul, &listed], &mine());
         assert_eq!((e.hauling_collateral, e.listed, e.listed_count), (5e8, 3e8, 1));
+        // one character's share: the alt listed, the main hauls
+        let alt = exposure([&haul, &listed], &mine().only(Party::Character(2)));
+        assert_eq!((alt.hauling_count, alt.listed_count), (0, 1));
+    }
+
+    #[test]
+    fn scopes_leave_out_internal_moves_across_everyone() {
+        let mut c = contract("item_exchange", 1, Some(2));
+        c.items = vec![item(587, 1, true)];
+        let fs = flows(&c, &mine(), None, true);
+        assert_eq!(fs.iter().filter(|f| Scope::All.includes(f, false)).count(), 0);
+        assert_eq!(fs.iter().filter(|f| Scope::All.includes(f, true)).count(), 2);
+        let alt = Scope::Of(Party::Character(2));
+        assert_eq!(fs.iter().filter(|f| alt.includes(f, false)).count(), 1);
+        for s in [Scope::All, alt, Scope::Of(Party::Corporation(500))] {
+            assert_eq!(Scope::from_key(&s.key()), s);
+        }
+        assert_eq!(Scope::from_key("nonsense"), Scope::All);
+    }
+
+    #[test]
+    fn roles_and_filters() {
+        let now: DateTime<Utc> = "2026-06-10T00:00:00Z".parse().unwrap();
+        // the corp issues a contract (put up by the main) that the alt is assigned
+        let mut c = contract("item_exchange", 1, None);
+        c.for_corporation = true;
+        c.issuer_corporation_id = 500;
+        c.status = "outstanding".into();
+        c.assignee_id = Some(2);
+        c.title = "Doctrine Ferox".into();
+        c.items = vec![ContractItem { name: "Ferox".into(), ..item(37480, 1, true) }];
+        let r = roles(&c, &mine());
+        assert_eq!(r, vec![(Party::Corporation(500), Role::Issued), (Party::Character(1), Role::Issued), (Party::Character(2), Role::Assigned)]);
+
+        let check = |f: Filter| f.matches(&c, &[], &r, &["doctrine".to_string()], now);
+        assert!(check(Filter::default()));
+        assert!(check(Filter { completed: Some(false), ..Default::default() }));
+        assert!(!check(Filter { completed: Some(true), ..Default::default() }));
+        assert!(check(Filter { party: Some(Party::Character(2)), role: Some(Role::Assigned), ..Default::default() }));
+        assert!(!check(Filter { party: Some(Party::Character(2)), role: Some(Role::Issued), ..Default::default() }));
+        assert!(check(Filter { query: "ferox doctrine".into(), ..Default::default() }));
+        assert!(!check(Filter { query: "rifter".into(), ..Default::default() }));
+        assert!(check(Filter { tag: Some("doctrine".into()), ..Default::default() }));
+        assert!(!check(Filter { tag: Some("srp".into()), ..Default::default() }));
+        assert!(check(Filter { type_id: Some(37480), availability: Some("alliance".into()), ..Default::default() }));
+        assert!(!check(Filter { kind: Some("courier".into()), ..Default::default() }));
+        assert!(check(Filter { period: Some(Period::Month), ..Default::default() }));
+        assert!(!check(Filter { period: Some(Period::Week), ..Default::default() }));
+        // finished contracts filter by what they were for the user
+        c.status = "finished".into();
+        c.acceptor_id = Some(77);
+        c.price = Some(1e8);
+        let fs = flows(&c, &mine(), None, true);
+        assert!(Filter { category: Some(Category::Sold), counterparty: Some(77), ..Default::default() }.matches(&c, &fs, &r, &[], now));
+        assert!(!Filter { category: Some(Category::Bought), ..Default::default() }.matches(&c, &fs, &r, &[], now));
+    }
+
+    #[test]
+    fn tag_totals_and_deals() {
+        let mut c = contract("item_exchange", 77, Some(1));
+        c.price = Some(90.0);
+        c.items = vec![item(587, 1, true)];
+        let fs = flows(&c, &mine(), None, true);
+        let tags: BTreeMap<i64, Vec<String>> = [(7, vec!["srp".to_string(), "doctrine".to_string()])].into();
+        let t = by_tag(&fs, &tags);
+        assert_eq!(t.len(), 2);
+        assert!(t.iter().all(|(_, t)| t.isk_out == 90.0));
+
+        let v = Valuation { included_sell: 100.0, included_buy: 80.0, ..Default::default() };
+        let d = deal(&c, v.included(true), v.asked(true)).unwrap();
+        assert_eq!(d.ratio(), Some(0.9));
+        assert!(deal(&contract("courier", 1, None), 1.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn what_waits_on_the_user() {
+        let now: DateTime<Utc> = "2026-06-10T12:00:00Z".parse().unwrap();
+        let mut assigned = contract("item_exchange", 77, None);
+        assigned.contract_id = 1;
+        assigned.status = "outstanding".into();
+        assigned.assignee_id = Some(500);
+        assigned.date_expired = now + Duration::days(3);
+        let mut expired = assigned.clone();
+        expired.contract_id = 2;
+        expired.date_expired = now - Duration::hours(1);
+        let mut haul = contract("courier", 77, Some(1));
+        haul.contract_id = 3;
+        haul.status = "in_progress".into();
+        haul.days_to_complete = Some(3);
+        haul.date_accepted = Some(now - Duration::days(2) - Duration::hours(6));
+        let mut later = haul.clone();
+        later.contract_id = 4;
+        later.date_accepted = Some(now);
+        assert_eq!(courier_due(&haul), Some(now + Duration::hours(18)));
+        let a = attention([&assigned, &expired, &haul, &later, &assigned], &mine(), now);
+        assert_eq!(a, Attention { assigned: vec![1], due_soon: vec![3] });
+        assert_eq!(a.count(), 2);
+        assert!(is_open_now(&assigned, now) && !is_open_now(&expired, now));
+    }
+
+    #[test]
+    fn csv_quotes_what_needs_it() {
+        let rows = vec![vec!["Type".to_string(), "Title".to_string()], vec!["Courier".into(), "Jita, \"fast\"".into()]];
+        assert_eq!(csv(&rows), "Type,Title\r\nCourier,\"Jita, \"\"fast\"\"\"\r\n");
     }
 }

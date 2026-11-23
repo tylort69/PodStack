@@ -52,6 +52,18 @@ pub const ALERT_TYPES: &[AlertType] = &[
         default_on: true,
     },
     AlertType { id: "contract_finished", label: "Contract completed", description: "One of your contracts is completed.", default_on: true },
+    AlertType {
+        id: "contract_assigned",
+        label: "Contract assigned to you",
+        description: "Someone assigns a contract to one of your characters or their corporation.",
+        default_on: true,
+    },
+    AlertType {
+        id: "courier_due",
+        label: "Courier due soon",
+        description: "A courier contract you're hauling has to be delivered within a day.",
+        default_on: true,
+    },
     AlertType { id: "new_mail", label: "New EVE mail", description: "An unread mail arrives.", default_on: false },
     AlertType { id: "fatigue_ended", label: "Jump fatigue ended", description: "A character's jump fatigue has worn off.", default_on: true },
     AlertType {
@@ -297,6 +309,38 @@ pub fn character_conditions(c: &Character, settings: &AlertSettings, extras: &Ex
         }
     }
 
+    // contracts waiting on the character or its corporation (a corporation's list is shared by its members, so the
+    // key is the contract alone and `evaluate` alerts once for it)
+    let corp = c.info.as_ref().map(|i| i.corporation_id).filter(|id| *id > 0);
+    let me = |id: Option<i64>| id.is_some_and(|id| id == c.id || Some(id) == corp);
+    let corp_contracts = json(&c.corp_contracts);
+    for k in records(&contracts, &["contracts", "items"]).into_iter().chain(records(&corp_contracts, &["contracts", "items"])) {
+        let Some(id) = id_of(k, &["contract_id"]) else { continue };
+        let status = s(k, &["status"]).unwrap_or("");
+        let kind = s(k, &["type"]).unwrap_or("item_exchange");
+        let int = |key: &str| k.get(key).and_then(|x| x.as_i64()).filter(|x| *x > 0);
+        let from = s(k, &["issuer_name"]).unwrap_or("someone");
+        let what = match s(k, &["title"]) {
+            Some(t) => format!("\"{t}\" ({})", kind.replace('_', " ")),
+            None => format!("A {} contract", kind.replace('_', " ")),
+        };
+        let open = date(k, &["date_expired"]).is_some_and(|e| e > now);
+        if status == "outstanding" && open && me(int("assignee_id")) && int("issuer_id") != Some(c.id) {
+            add("contract_assigned", id.clone(), format!("{name}: contract from {from}"), format!("{what} is waiting to be accepted."));
+        }
+        if kind == "courier" && status == "in_progress" && me(int("acceptor_id")) {
+            let due = date(k, &["date_accepted"]).zip(int("days_to_complete")).map(|(a, d)| a + Duration::days(d));
+            if let Some(due) = due.filter(|d| *d > now && *d - now <= Duration::hours(24)) {
+                let place = |key: &str| k.get(key).and_then(|p| s(p, &["system_name", "name"]));
+                let route = match (place("start_location"), place("end_location")) {
+                    (Some(a), Some(b)) => format!("{a} » {b}"),
+                    _ => "A courier".into(),
+                };
+                add("courier_due", id, format!("{name}: courier due soon"), format!("{route} has to be delivered in {}.", countdown(due - now)));
+            }
+        }
+    }
+
     let mail = json(&c.mail);
     let seen_mail = seen_ids(c, &["mail.seen", "mail.read"]);
     for m in records(&mail, &["mails", "mail", "headers", "items"]) {
@@ -417,6 +461,10 @@ pub fn evaluate(state: &mut AlertState, conditions: Vec<Condition>, settings: &A
     for c in conditions {
         // likewise for a newly added character
         if seen.contains(&c.key) || !settings.is_on(c.kind) || !known_before.contains(&c.character_id) {
+            continue;
+        }
+        // the same event seen by several characters (their corporation's contracts) alerts once
+        if fresh.iter().any(|f| f.key == c.key) {
             continue;
         }
         // one alert per type and character per check (three new injectors are one alert)
@@ -649,6 +697,58 @@ mod tests {
         assert_eq!(records(&mails, &[]).len(), 2);
         assert_eq!(id_of(&mails[0], &["mail_id"]).as_deref(), Some("1"));
         assert!(date(&jobs["jobs"][0], &["end_date"]).unwrap() <= now);
+    }
+
+    #[test]
+    fn contracts_waiting_on_you() {
+        use crate::domains::contracts::{Contract, ContractsData};
+        let s = AlertSettings::default();
+        let now = Utc::now();
+        let mut c = character(1);
+        c.info.as_mut().unwrap().corporation_id = 98000001;
+        let assigned = Contract {
+            contract_id: 10,
+            kind: "item_exchange".into(),
+            status: "outstanding".into(),
+            issuer_id: 5,
+            issuer_name: "Seller".into(),
+            assignee_id: Some(98000001),
+            date_issued: now - Duration::hours(1),
+            date_expired: now + Duration::days(7),
+            ..Default::default()
+        };
+        let haul = Contract {
+            contract_id: 11,
+            kind: "courier".into(),
+            status: "in_progress".into(),
+            issuer_id: 5,
+            acceptor_id: Some(1),
+            date_issued: now - Duration::days(3),
+            date_expired: now + Duration::days(4),
+            date_accepted: Some(now - Duration::days(2)),
+            days_to_complete: Some(3),
+            ..Default::default()
+        };
+        let mut relaxed = haul.clone();
+        relaxed.contract_id = 12;
+        relaxed.date_accepted = Some(now);
+        c.contracts = Some(ContractsData { contracts: vec![haul, relaxed], slots_used: 0 });
+        c.corp_contracts = Some(ContractsData { contracts: vec![assigned], slots_used: 0 });
+        let conds = character_conditions(&c, &s, &Extras::default(), now);
+        let keys: Vec<&str> = conds.iter().map(|c| c.key.as_str()).collect();
+        assert!(keys.contains(&"contract_assigned:10"));
+        assert!(keys.contains(&"courier_due:11"));
+        assert!(!keys.contains(&"courier_due:12"));
+
+        // two characters in the same corporation see the same contract: one alert
+        let mut c2 = c.clone();
+        c2.id = 2;
+        c2.contracts = None;
+        let mut all = conds.clone();
+        all.extend(character_conditions(&c2, &s, &Extras::default(), now));
+        let mut state = AlertState { active: Some(vec![]), characters: vec![1, 2], log: vec![] };
+        let fresh = evaluate(&mut state, all, &s, &[1, 2], now);
+        assert_eq!(fresh.iter().filter(|f| f.kind == "contract_assigned").count(), 1);
     }
 
     #[test]

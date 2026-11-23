@@ -43,6 +43,7 @@ pub fn nav_badge(core: &podstack_core::Core, route: Route) -> Option<u32> {
         Route::Market => market::nav_badge(core),
         Route::Industry => industry::nav_badge(core),
         Route::Planets => planets::nav_badge(core),
+        Route::Contracts => contracts::overview::nav_badge(core),
         _ => None,
     }
     .filter(|n| *n > 0)
