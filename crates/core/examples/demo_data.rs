@@ -189,6 +189,80 @@ fn ensure_path(doc: &mut DoctrineDoc, path: &str) -> String {
     parent.unwrap()
 }
 
+/// Doctrine ships in hangars, for the Asset Search's doctrine view: some fitted as the doctrine says, some packaged,
+/// one fitted another way. Characters with nothing here (the new one) are left without assets, as if not loaded.
+fn add_assets(dir: &std::path::Path, doc: &DoctrineDoc, places: &[Place]) {
+    use podstack_core::domains::assets::{Asset, AssetsData};
+    // (character, ship, how: 'f' fitted as the doctrine, 'p' packaged, 'o' assembled but fitted otherwise, station index)
+    let owned: &[(i64, &str, char, usize)] = &[
+        (90000001, "Zealot", 'f', 0),
+        (90000001, "Guardian", 'p', 1),
+        (90000001, "Vindicator", 'f', 0),
+        (90000002, "Revelation", 'f', 1),
+        (90000002, "Naglfar", 'p', 3),
+        (90000003, "Guardian", 'f', 1),
+        (90000003, "Basilisk", 'o', 0),
+        (90000005, "Drake", 'f', 2),
+        (90000005, "Ferox", 'p', 2),
+    ];
+    let fits = doc.all_fits();
+    let mut next = 1_000_000_000_000i64;
+    let mut id = || {
+        next += 1;
+        next
+    };
+    for (char_id, _, _) in CHARS.iter().filter(|(_, _, p)| !matches!(p, Profile::New)) {
+        let path = dir.join("characters").join(format!("{char_id}.json"));
+        let mut c: Character = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let mut data = AssetsData::default();
+        for (_, ship, how, at) in owned.iter().filter(|o| o.0 == *char_id) {
+            let Some((_, _, fit)) = fits.iter().find(|(_, _, f)| f.ship_name == *ship) else { continue };
+            let place = &places[*at];
+            data.locations.insert(place.id, place.clone());
+            let hull = id();
+            let asset = |item_id, type_id, name: &str, quantity, flag: &str, parent: Option<i64>, singleton| Asset {
+                item_id,
+                type_id,
+                name: name.into(),
+                quantity,
+                flag: flag.into(),
+                parent_id: parent,
+                root_location_id: place.id,
+                is_singleton: singleton,
+                ..Default::default()
+            };
+            data.items.push(asset(hull, fit.ship_id, ship, 1, "Hangar", None, *how != 'p'));
+            if *how == 'p' {
+                continue;
+            }
+            // a ship fitted otherwise keeps only its first module
+            let rest = fit.items.iter().skip(1).take(if *how == 'o' { 1 } else { usize::MAX });
+            for (slot, i) in rest.enumerate() {
+                let flag = match i.category.as_str() {
+                    "Module" | "Subsystem" => format!("LoSlot{slot}"),
+                    "Drone" => "DroneBay".into(),
+                    _ => "Cargo".into(),
+                };
+                let stacked = !matches!(i.category.as_str(), "Module" | "Subsystem");
+                for _ in 0..if stacked { 1 } else { i.quantity.max(1) } {
+                    data.items.push(asset(id(), i.type_id, &i.name, if stacked { i.quantity as i64 } else { 1 }, &flag, Some(hull), !stacked));
+                }
+            }
+        }
+        c.assets = Some(data);
+        std::fs::write(&path, serde_json::to_string(&c).unwrap()).unwrap();
+    }
+}
+
+/// Two accounts for the first four characters; the last two stay unassigned.
+fn add_accounts(dir: &std::path::Path) {
+    let doc = serde_json::json!({
+        "accounts": { "main": { "name": "Main account" }, "alts": { "name": "Alt account" } },
+        "assignments": { "90000001": "main", "90000002": "main", "90000003": "alts", "90000004": "alts" },
+    });
+    std::fs::write(dir.join("accounts.json"), serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -484,6 +558,8 @@ async fn main() {
         doc.group_mut(&id).unwrap().doctrines.push(Doctrine { id: doctrines::new_id(), name: doctrine, fits, ..Default::default() });
     }
     std::fs::write(dir.join("doctrines.json"), serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    add_assets(&dir, &doc, &[jita, amarr, dodixie, rens]);
+    add_accounts(&dir);
     core.universe.flush();
     println!("demo data written to {} ({} contracts, {} doctrine fits)", dir.display(), archive.contracts.len(), doc.fit_count());
 }

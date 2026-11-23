@@ -1,5 +1,8 @@
 //! Asset Search: every character's assets in one search ("where is my Orca?"). Before anything is typed it lists
-//! the most valuable items. Values are EVE's universe-wide average prices, as on the Assets tab.
+//! the most valuable items. Values are EVE's universe-wide average prices, as on the Assets tab. The Doctrine ships
+//! view ([`doctrine_ships`]) checks every character's ships against the doctrines it can fly.
+
+mod doctrine_ships;
 
 use crate::ctx::{CharTab, Ctx, Page, Route};
 use crate::pages::industry::{icon_url, char_cell, on_search, place_cell, type_cell};
@@ -14,9 +17,17 @@ const ROW_LIMIT: usize = 500;
 /// Shown before anything is searched for.
 const TOP_ITEMS: usize = 50;
 const KEY: &str = "asset_search.query";
+const VIEW_KEY: &str = "asset_search.view";
+const VIEWS: [&str; 2] = ["Search", "Doctrine ships"];
 
 pub fn build(ctx: &Ctx) -> Page {
+    // PODSTACK_ASSETS_VIEW="doctrine ships" opens the doctrine view (for UI testing)
+    let view = ctx.recall(VIEW_KEY).or_else(|| std::env::var("PODSTACK_ASSETS_VIEW").ok()).unwrap_or_default();
+    if view.eq_ignore_ascii_case(VIEWS[1]) {
+        return doctrine_ships::build(ctx);
+    }
     let body = w::page_body();
+    body.append(&view_switch(ctx, 0));
     body.set_vexpand(true);
     let chars = ctx.core().characters();
     let initial = ctx.recall(KEY).unwrap_or_default();
@@ -119,6 +130,17 @@ pub fn build(ctx: &Ctx) -> Page {
         entry.set_position(-1);
     });
     Page::new("Asset Search", body).no_scroll().static_page()
+}
+
+/// Search, or Doctrine ships. The two views are separate pages (one updates itself, the other is rebuilt live).
+fn view_switch(ctx: &Ctx, selected: usize) -> gtk::Box {
+    let ctx = ctx.clone();
+    w::segmented(&VIEWS, selected, move |i| {
+        if i != selected {
+            ctx.remember(VIEW_KEY, VIEWS[i]);
+            ctx.rebuild();
+        }
+    })
 }
 
 /// When each character's assets were last refreshed.

@@ -15,6 +15,8 @@ pub mod plan_tools;
 pub mod fitting;
 // Doctrines: groups, doctrines and their fits, who can fly what (`doctrines`)
 pub mod doctrines;
+// Doctrine ships owned and missing per character, and what the missing ones cost (`doctrine_inventory`)
+pub mod doctrine_inventory;
 
 // Mail bodies, contracts and wallet helpers
 pub mod comms;
