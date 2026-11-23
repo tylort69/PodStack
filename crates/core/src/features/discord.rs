@@ -163,7 +163,7 @@ pub fn message(cfg: &DiscordConfig, embeds: Vec<Value>) -> Value {
 }
 
 /// PodStack's icon where Discord can fetch it, for the webhook's avatar.
-const ICON_URL: &str = "https://raw.githubusercontent.com/tylort69/PodStack/rust-rewrite/assets/icon.png";
+const ICON_URL: &str = "https://raw.githubusercontent.com/tylort69/PodStack/master/assets/icon.png";
 
 /// Posts a message, waiting out one rate limit if Discord asks. Errors are messages for the user.
 async fn post(http: &reqwest::Client, url: &str, bot: Option<&str>, body: &Value) -> Result<Value, String> {
