@@ -17,7 +17,7 @@ use chrono::{DateTime, Duration, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Settings key (`core.setting::<AlertSettings>(SETTINGS_KEY)`).
 pub const SETTINGS_KEY: &str = "alerts";
@@ -98,32 +98,124 @@ pub const ALERT_TYPES: &[AlertType] = &[
     },
 ];
 
+/// Where an alert can go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Channel {
+    Desktop,
+    Discord,
+}
+
+impl Channel {
+    pub const ALL: [Channel; 2] = [Channel::Desktop, Channel::Discord];
+    pub fn label(self) -> &'static str {
+        match self {
+            Channel::Desktop => "Desktop",
+            Channel::Discord => "Discord",
+        }
+    }
+}
+
+/// Which alerts go where. Every alert type and every character can be sent to the desktop, to Discord, to both or
+/// to neither, and each channel has a master switch.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AlertSettings {
-    /// Show desktop notifications at all (conditions are tracked either way).
+    /// Desktop notifications at all (conditions are tracked either way).
     pub enabled: bool,
+    /// Discord at all (set up in `features::discord`).
+    pub discord: bool,
     pub queue_low_hours: u32,
-    /// Per alert type; missing = the type's default.
+    /// Desktop, per alert type; missing = the type's default.
     pub types: BTreeMap<String, bool>,
+    /// Discord, per alert type; missing = the type's default.
+    pub discord_types: BTreeMap<String, bool>,
+    /// Characters whose alerts don't go to the desktop, or to Discord.
+    pub desktop_muted: BTreeSet<i64>,
+    pub discord_muted: BTreeSet<i64>,
 }
 
 impl Default for AlertSettings {
     fn default() -> Self {
-        AlertSettings { enabled: true, queue_low_hours: 24, types: BTreeMap::new() }
+        AlertSettings {
+            enabled: true,
+            discord: false,
+            queue_low_hours: 24,
+            types: BTreeMap::new(),
+            discord_types: BTreeMap::new(),
+            desktop_muted: BTreeSet::new(),
+            discord_muted: BTreeSet::new(),
+        }
     }
 }
 
+fn default_on(id: &str) -> bool {
+    ALERT_TYPES.iter().find(|t| t.id == id).map(|t| t.default_on).unwrap_or(false)
+}
+
 impl AlertSettings {
+    /// Whether a type goes to the desktop (its own switch only; see [`AlertSettings::sends`]).
     pub fn is_on(&self, id: &str) -> bool {
-        self.types
-            .get(id)
-            .copied()
-            .unwrap_or_else(|| ALERT_TYPES.iter().find(|t| t.id == id).map(|t| t.default_on).unwrap_or(false))
+        self.type_on(Channel::Desktop, id)
     }
 
     pub fn set(&mut self, id: &str, on: bool) {
-        self.types.insert(id.to_string(), on);
+        self.set_type(Channel::Desktop, id, on);
+    }
+
+    fn map(&self, ch: Channel) -> &BTreeMap<String, bool> {
+        match ch {
+            Channel::Desktop => &self.types,
+            Channel::Discord => &self.discord_types,
+        }
+    }
+
+    pub fn type_on(&self, ch: Channel, id: &str) -> bool {
+        self.map(ch).get(id).copied().unwrap_or_else(|| default_on(id))
+    }
+
+    pub fn set_type(&mut self, ch: Channel, id: &str, on: bool) {
+        match ch {
+            Channel::Desktop => self.types.insert(id.to_string(), on),
+            Channel::Discord => self.discord_types.insert(id.to_string(), on),
+        };
+    }
+
+    pub fn channel_on(&self, ch: Channel) -> bool {
+        match ch {
+            Channel::Desktop => self.enabled,
+            Channel::Discord => self.discord,
+        }
+    }
+
+    pub fn character_on(&self, ch: Channel, id: i64) -> bool {
+        !match ch {
+            Channel::Desktop => &self.desktop_muted,
+            Channel::Discord => &self.discord_muted,
+        }
+        .contains(&id)
+    }
+
+    pub fn set_character(&mut self, ch: Channel, id: i64, on: bool) {
+        let set = match ch {
+            Channel::Desktop => &mut self.desktop_muted,
+            Channel::Discord => &mut self.discord_muted,
+        };
+        if on {
+            set.remove(&id);
+        } else {
+            set.insert(id);
+        }
+    }
+
+    /// Whether an alert of this type for this character goes to a channel: the channel is on, the type is on for
+    /// it, and the character isn't muted there.
+    pub fn sends(&self, ch: Channel, kind: &str, character: i64) -> bool {
+        self.channel_on(ch) && self.type_on(ch, kind) && self.character_on(ch, character)
+    }
+
+    /// The channels an alert goes to.
+    pub fn channels_for(&self, kind: &str, character: i64) -> Vec<Channel> {
+        Channel::ALL.into_iter().filter(|ch| self.sends(*ch, kind, character)).collect()
     }
 }
 
@@ -145,6 +237,9 @@ pub struct LogEntry {
     pub body: String,
     #[serde(default)]
     pub character_id: Option<i64>,
+    /// Where it was sent ("Desktop", "Discord").
+    #[serde(default)]
+    pub sent_to: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -460,7 +555,8 @@ pub fn evaluate(state: &mut AlertState, conditions: Vec<Condition>, settings: &A
     let mut fresh: Vec<Condition> = vec![];
     for c in conditions {
         // likewise for a newly added character
-        if seen.contains(&c.key) || !settings.is_on(c.kind) || !known_before.contains(&c.character_id) {
+        // an alert nothing would show isn't one (switching a channel on later doesn't replay it)
+        if seen.contains(&c.key) || settings.channels_for(c.kind, c.character_id).is_empty() || !known_before.contains(&c.character_id) {
             continue;
         }
         // the same event seen by several characters (their corporation's contracts) alerts once
@@ -474,8 +570,16 @@ pub fn evaluate(state: &mut AlertState, conditions: Vec<Condition>, settings: &A
             fresh.push(c);
         }
     }
-    let mut entries: Vec<LogEntry> =
-        fresh.iter().map(|c| LogEntry { time: now, title: c.title.clone(), body: c.body.clone(), character_id: Some(c.character_id) }).collect();
+    let mut entries: Vec<LogEntry> = fresh
+        .iter()
+        .map(|c| LogEntry {
+            time: now,
+            title: c.title.clone(),
+            body: c.body.clone(),
+            character_id: Some(c.character_id),
+            sent_to: settings.channels_for(c.kind, c.character_id).iter().map(|ch| ch.label().to_string()).collect(),
+        })
+        .collect();
     entries.append(&mut state.log);
     entries.truncate(LOG_SIZE);
     state.log = entries;
@@ -534,9 +638,16 @@ pub fn load_state() -> AlertState {
     store::load_doc(STATE_DOC)
 }
 
-/// Runs one check over every character: saves what's true now and returns what to notify (nothing when
-/// notifications are off, though the log still records them).
-pub fn check(core: &Core, now: DateTime<Utc>) -> Option<Notice> {
+/// What a check sends where.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Delivery {
+    pub desktop: Option<Notice>,
+    pub discord: Vec<Condition>,
+}
+
+/// Runs one check over every character: saves what's true now and returns what to send to the desktop and to
+/// Discord, each by its own settings.
+pub fn check(core: &Core, now: DateTime<Utc>) -> Delivery {
     let settings: AlertSettings = core.setting(SETTINGS_KEY);
     let extras = Extras { farms: farms_from_doc(&store::load_doc::<Value>("farms")) };
     let chars = core.characters();
@@ -550,14 +661,16 @@ pub fn check(core: &Core, now: DateTime<Utc>) -> Option<Notice> {
         fresh
     };
     if fresh.is_empty() {
-        return None;
+        return Delivery::default();
     }
     core.emit(Event::Doc(STATE_DOC.into()));
-    if settings.enabled {
-        notice(fresh)
-    } else {
-        None
-    }
+    route(&settings, fresh)
+}
+
+/// Splits fresh alerts between the channels.
+pub fn route(settings: &AlertSettings, fresh: Vec<Condition>) -> Delivery {
+    let to = |ch: Channel| -> Vec<Condition> { fresh.iter().filter(|c| settings.sends(ch, c.kind, c.character_id)).cloned().collect() };
+    Delivery { desktop: notice(to(Channel::Desktop)), discord: to(Channel::Discord) }
 }
 
 pub fn clear_log(core: &Core) {
@@ -568,6 +681,41 @@ pub fn clear_log(core: &Core) {
         store::save_doc(STATE_DOC, &state);
     }
     core.emit(Event::Doc(STATE_DOC.into()));
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+
+    fn c(kind: &'static str, id: i64) -> Condition {
+        Condition { key: format!("{kind}:{id}"), kind, character_id: id, title: kind.into(), body: String::new() }
+    }
+
+    #[test]
+    fn each_alert_goes_where_its_settings_say() {
+        let mut s = AlertSettings { discord: true, ..Default::default() };
+        // defaults: both channels follow the type's default
+        assert_eq!(s.channels_for("queue_empty", 1), vec![Channel::Desktop, Channel::Discord]);
+        assert!(s.channels_for("new_mail", 1).is_empty(), "off by default");
+        // mail only to Discord, injectors only to the desktop, one character only on the desktop
+        s.set_type(Channel::Discord, "new_mail", true);
+        s.set_type(Channel::Discord, "injector_ready", false);
+        s.set_character(Channel::Discord, 2, false);
+        let d = route(&s, vec![c("new_mail", 1), c("injector_ready", 1), c("queue_empty", 2)]);
+        assert_eq!(d.discord.iter().map(|x| x.kind).collect::<Vec<_>>(), vec!["new_mail"]);
+        match d.desktop {
+            Some(Notice::Separate(v)) => assert_eq!(v.iter().map(|x| x.kind).collect::<Vec<_>>(), vec!["injector_ready", "queue_empty"]),
+            other => panic!("{other:?}"),
+        }
+        // channel master switches
+        s.enabled = false;
+        assert_eq!(s.channels_for("queue_empty", 1), vec![Channel::Discord]);
+        s.discord = false;
+        assert!(route(&s, vec![c("queue_empty", 1)]) == Delivery::default());
+        // the old settings file (desktop types only) still reads
+        let old: AlertSettings = serde_json::from_str(r#"{"enabled":true,"queue_low_hours":12,"types":{"new_mail":true}}"#).unwrap();
+        assert!(old.is_on("new_mail") && !old.discord);
+    }
 }
 
 #[cfg(test)]

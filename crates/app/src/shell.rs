@@ -409,9 +409,7 @@ impl Shell {
 
         let head = w::hbox(12);
         head.add_css_class("app-title");
-        let logo = w::icon("hexagon");
-        logo.add_css_class("primary-text");
-        head.append(&logo);
+        head.append(&w::app_logo(32));
         head.append(&w::line(config::APP_NAME, &["title-large"]));
         b.append(&head);
 

@@ -5,7 +5,7 @@ use crate::ctx::{Ctx, Page};
 use crate::rt;
 use crate::widgets::{self as w, Btn};
 use chrono::{DateTime, Duration, Timelike, Utc};
-use gtk::{gdk, glib, prelude::*};
+use gtk::prelude::*;
 use podstack_core::{config, esi::EsiError, fmt};
 use serde::Deserialize;
 use std::rc::Rc;
@@ -245,15 +245,8 @@ fn link(ctx: &Ctx, icon: &str, text: &str, url: &'static str) -> gtk::Button {
     b
 }
 
-fn logo() -> gtk::Picture {
-    let bytes = glib::Bytes::from_static(include_bytes!("../../../../assets/icon.png"));
-    let pic = gtk::Picture::new();
-    if let Ok(t) = gdk::Texture::from_bytes(&bytes) {
-        pic.set_paintable(Some(&t));
-    }
-    pic.set_size_request(96, 96);
-    pic.set_can_shrink(true);
-    pic.set_content_fit(gtk::ContentFit::Contain);
+fn logo() -> gtk::Image {
+    let pic = w::app_logo(96);
     pic.set_valign(gtk::Align::Start);
     pic.add_css_class("about-logo");
     pic

@@ -1,5 +1,9 @@
-//! Settings: appearance (Material You theme source, mode, style, contrast), EVE login application, desktop alerts,
-//! window and tray behaviour, password-protected backup and restore, and the data folders.
+//! Settings, in tabs:
+//!
+//! - General: appearance (Material You theme source, mode, style, contrast) and the window and tray;
+//! - Alerts: desktop notifications and Discord, and which alert types and characters go to each;
+//! - EVE login: the EVE application characters log in with;
+//! - Data: password-protected backup and restore, and the data folders.
 //!
 //! The page is static (it holds text input): each control saves straight away through `Core`, and the parts that
 //! show changing state (recent alerts, tray status) update themselves.
@@ -34,16 +38,40 @@ button.settings-swatch.selected { background-color: @secondary_container; color:
 .settings-alert-row { padding: 6px 24px; }
 "#;
 
+const TABS: [&str; 4] = ["General", "Alerts", "EVE login", "Data"];
+const TAB_KEY: &str = "settings.tab";
+
+/// The open tab: the one last chosen, or `PODSTACK_SETTINGS_TAB` (for UI testing), or General.
+fn current(ctx: &Ctx) -> usize {
+    let name = ctx.recall(TAB_KEY).or_else(|| std::env::var("PODSTACK_SETTINGS_TAB").ok()).unwrap_or_default();
+    TABS.iter().position(|t| t.eq_ignore_ascii_case(name.trim())).unwrap_or(0)
+}
+
 pub fn build(ctx: &Ctx) -> Page {
     crate::theme::add_css(CSS);
     let body = w::page_body();
     body.set_spacing(20);
-    body.append(&appearance::card(ctx));
-    body.append(&login_card(ctx));
-    body.append(&alerts::card(ctx));
-    body.append(&window_card(ctx));
-    body.append(&backup::card(ctx));
-    body.append(&data_card(ctx));
+    let tab = current(ctx);
+    {
+        let ctx = ctx.clone();
+        let bar = w::segmented(&TABS, tab, move |i| {
+            ctx.remember(TAB_KEY, TABS[i]);
+            // once the toggle handler has returned: the rebuild replaces the button being clicked
+            let ctx = ctx.clone();
+            glib::idle_add_local_once(move || ctx.rebuild());
+        });
+        bar.set_halign(gtk::Align::Start);
+        body.append(&bar);
+    }
+    let cards: Vec<gtk::Widget> = match tab {
+        1 => alerts::cards(ctx),
+        2 => vec![login_card(ctx).upcast()],
+        3 => vec![backup::card(ctx).upcast(), data_card(ctx).upcast()],
+        _ => vec![appearance::card(ctx).upcast(), window_card(ctx).upcast()],
+    };
+    for c in cards {
+        body.append(&c);
+    }
     Page::new("Settings", body).static_page()
 }
 

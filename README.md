@@ -131,10 +131,11 @@ From a first frigate to alliance capital programs.
 ### Everything else
 
 - **Asset search** across all characters, with estimated values.
-- **Desktop alerts** through your notification daemon: training stopped or running low, lapsed to Alpha, injector
-  ready, contract completed or assigned to you, courier due soon, new mail, jump fatigue ended, industry job ready,
-  PI extractor stopped, market order finished, new notifications and calendar events. Each can be turned on or
-  off.
+- **Alerts on your desktop and on Discord**: training stopped or running low, lapsed to Alpha, injector ready,
+  contract completed or assigned to you, courier due soon, new mail, jump fatigue ended, industry job ready, PI
+  extractor stopped, market order finished, new notifications and calendar events. Send each one to desktop
+  notifications, to Discord (a channel webhook, or your own bot in a channel or by direct message), to both or to
+  neither, per alert type and per character.
 - **Tray icon** with close-to-tray, and alerts that keep running while the window is hidden.
 - **Password-protected backup and restore** of your logins, characters, plans and settings in one file.
 

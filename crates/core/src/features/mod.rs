@@ -18,6 +18,8 @@ pub mod doctrines;
 
 // Mail bodies, contracts and wallet helpers
 pub mod comms;
+// Alerts to Discord: webhook, bot channel or bot DM (`discord`)
+pub mod discord;
 // Contract history, money flows and totals (`contracts`)
 pub mod contracts;
 // Couriers: active hauls, hauling history, rate cards and quotes, public courier finder (`courier`)

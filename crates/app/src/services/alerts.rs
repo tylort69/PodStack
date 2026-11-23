@@ -1,6 +1,7 @@
-//! Desktop alerts (training stopped, injector ready, new mail, …) via freedesktop notifications, which mako, dunst,
-//! swaync and other notification daemons show. The rules live in `podstack_core::features::alerts`; this checks
-//! them every minute on Tokio (also while the window is hidden in the tray) and shows what's new.
+//! Alerts (training stopped, injector ready, new mail, …) on the desktop, via freedesktop notifications which mako,
+//! dunst, swaync and other notification daemons show, and on Discord. The rules and which alert goes where live in
+//! `podstack_core::features::alerts` (Discord delivery in `features::discord`); this checks them every minute on
+//! Tokio (also while the window is hidden in the tray) and sends what's new.
 //!
 //! Clicking a notification raises the window and, when the shell registers the `app.open-character` action
 //! (an `i64` parameter), opens that character.
@@ -9,6 +10,7 @@ use crate::rt;
 use futures::StreamExt;
 use gtk::{gio, glib, prelude::*};
 use podstack_core::features::alerts::{self, Notice};
+use podstack_core::features::discord;
 use podstack_core::{config, store, Core};
 use std::sync::{Arc, OnceLock};
 
@@ -33,8 +35,19 @@ pub fn start(core: Arc<Core>) {
         loop {
             tick.tick().await;
             let core = core.clone();
-            let notice = tokio::task::spawn_blocking(move || alerts::check(&core, chrono::Utc::now())).await.ok().flatten();
-            match notice {
+            let check = core.clone();
+            let delivery = tokio::task::spawn_blocking(move || alerts::check(&check, chrono::Utc::now())).await.unwrap_or_default();
+            if !delivery.discord.is_empty() {
+                let core = core.clone();
+                let list = delivery.discord.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = discord::deliver(&core.esi.http, &list).await {
+                        tracing::warn!("alerts: Discord: {e}");
+                    }
+                    core.emit(podstack_core::Event::Doc(alerts::STATE_DOC.into()));
+                });
+            }
+            match delivery.desktop {
                 Some(Notice::Separate(list)) => {
                     for c in list {
                         notify(&c.title, &c.body, Some(c.character_id));

@@ -532,3 +532,19 @@ pub fn eve_image(url: &str, size: i32) -> gtk::Image {
 pub fn avatar(url: &str, size: i32) -> gtk::Widget {
     crate::images::avatar(url, size)
 }
+
+/// PodStack's own icon at `size` pixels (the drawer header, About).
+pub fn app_logo(size: i32) -> gtk::Image {
+    thread_local! {
+        static TEXTURE: Option<gtk::gdk::Texture> =
+            gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from_static(include_bytes!("../../../../assets/icon.png"))).ok();
+    }
+    // an Image keeps the size it's given; a Picture would grow to the icon's full resolution
+    let img = TEXTURE.with(|t| match t {
+        Some(t) => gtk::Image::from_paintable(Some(t)),
+        None => gtk::Image::new(),
+    });
+    img.set_pixel_size(size);
+    img.set_valign(gtk::Align::Center);
+    img
+}
