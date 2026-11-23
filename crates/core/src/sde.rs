@@ -177,10 +177,12 @@ pub struct Ships {
 pub static SHIPS: Live<Ships> = Live::new(load_ships);
 
 fn load_ships() -> Ships {
+    /// (type id, name, group id, group name, race id, meta group name, [(skill, level)])
+    type Row = (i64, String, i64, String, Option<i64>, String, Vec<(i64, u8)>);
     #[derive(Deserialize)]
     struct File {
         races: HashMap<String, String>,
-        ships: Vec<(i64, String, i64, String, Option<i64>, String, Vec<(i64, u8)>)>,
+        ships: Vec<Row>,
     }
     let legacy: ShipsFile = serde_json::from_str(include_str!("../../../data/ships.json")).expect("data/ships.json");
     let mut skins: HashMap<i64, Vec<ShipSkin>> = legacy.ships.into_values().map(|s| (s.type_id, s.skins)).collect();

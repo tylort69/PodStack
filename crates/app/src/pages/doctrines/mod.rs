@@ -1,6 +1,6 @@
 //! The Doctrines destination, in tabs:
 //!
-//! - Doctrines: groups (and, when wanted, subgroups such as SIGs inside them) holding doctrines, each with the fits
+//! - Doctrines (`library`): groups (and, when wanted, subgroups such as SIGs inside them) holding doctrines, each with the fits
 //!   it accepts; import and export of fits and whole groups; who of the characters can fly each doctrine and fit,
 //!   and the skill plan for those who can't yet;
 //! - Pilots: every character with the doctrine fits it can fly, and what's closest;
@@ -9,7 +9,7 @@
 //! The data and checks live in `podstack_core::features::doctrines`; fits are read with `features::fitting`.
 
 pub mod common;
-pub mod doctrines;
+pub mod library;
 pub mod pilots;
 pub mod ships;
 
@@ -47,7 +47,7 @@ fn current(ctx: &Ctx) -> Tab {
 pub fn build(ctx: &Ctx) -> Page {
     crate::theme::add_css(common::CSS);
     match current(ctx) {
-        Tab::Doctrines => doctrines::build(ctx),
+        Tab::Doctrines => library::build(ctx),
         Tab::Pilots => pilots::build(ctx),
         Tab::Ships => ships::build(ctx),
     }
