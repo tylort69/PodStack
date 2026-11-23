@@ -355,11 +355,21 @@ pub fn build(ctx: &Ctx) -> Page {
 
     let root = w::vbox(0);
     root.set_vexpand(true);
-    let header = w::hbox(12);
+    // the tabs and the library's actions: side by side, the actions on a line of their own in a narrow window
+    let header = gtk::FlowBox::new();
+    header.set_selection_mode(gtk::SelectionMode::None);
+    header.set_homogeneous(false);
+    header.set_column_spacing(12);
+    header.set_row_spacing(8);
+    header.set_max_children_per_line(2);
     header.set_margin_start(24);
     header.set_margin_end(24);
     header.set_margin_top(8);
     header.append(&super::tab_bar(ctx, Tab::Doctrines));
+    let actions = w::hbox(12);
+    actions.set_halign(gtk::Align::End);
+    actions.set_hexpand(true);
+    header.append(&actions);
     root.append(&header);
 
     let list = gtk::ListBox::new();
@@ -383,18 +393,15 @@ pub fn build(ctx: &Ctx) -> Page {
         was_empty: doc.groups.is_empty(),
     });
 
-    let spacer = w::hbox(0);
-    spacer.set_hexpand(true);
-    header.append(&spacer);
     let body: gtk::Widget = if doc.groups.is_empty() {
         welcome(&lib).upcast()
     } else {
-        header.append(&library_menu(&lib));
+        actions.append(&library_menu(&lib));
         let add = w::button_icon("create_new_folder", "New group", Btn::Tonal);
         add.set_tooltip_text(Some("A group of people you fly with: an alliance, a corporation, a fleet community"));
         let l = lib.clone();
         add.connect_clicked(move |_| dialogs::new_group(&l, None));
-        header.append(&add);
+        actions.append(&add);
 
         let pane = w::vbox(8);
         pane.add_css_class("doclib-pane");
@@ -579,9 +586,6 @@ fn render_list(lib: &Rc<Lib>) {
         if !open {
             return;
         }
-        for s in &g.groups {
-            walk(lib, s, depth + 1, if whole { "" } else { query }, checks, add);
-        }
         for d in &g.doctrines {
             if !whole && !doctrine_matches(d, query) {
                 continue;
@@ -593,6 +597,10 @@ fn render_list(lib: &Rc<Lib>) {
                 tree_row(lib, depth + 1, None, "shield", &d.name, false, counts(d.fits.len(), checks.ready.then_some(t.ready))),
                 Some(format!("{} fits \u{00b7} {} of {} characters can fly it", d.fits.len(), t.ready, checks.ids.len())),
             );
+        }
+        // a group's own doctrines first, then its subgroups, as the group view lists them
+        for s in &g.groups {
+            walk(lib, s, depth + 1, if whole { "" } else { query }, checks, add);
         }
     }
     for g in &doc.groups {

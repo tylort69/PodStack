@@ -49,6 +49,8 @@ pub fn pilot_chip(c: &Character) -> gtk::Widget {
     b.append(&w::avatar(&config::character_portrait(c.id, 64), 24));
     let n = w::line(&c.name(), &["label-large"]);
     n.set_valign(gtk::Align::Center);
+    // character names are short: show them whole
+    n.set_ellipsize(gtk::pango::EllipsizeMode::None);
     b.append(&n);
     b.upcast()
 }
@@ -65,6 +67,7 @@ pub fn fit_chip(ship_id: i64, label: &str, ready: bool, tooltip: Option<&str>) -
     let n = w::line(label, &["label-large"]);
     n.set_valign(gtk::Align::Center);
     n.set_max_width_chars(36);
+    n.set_width_chars(label.chars().count().min(36) as i32);
     b.append(&n);
     b.set_tooltip_text(tooltip);
     b.upcast()
