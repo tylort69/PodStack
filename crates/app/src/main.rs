@@ -18,20 +18,17 @@ use gtk::{gio, glib, prelude::*};
 use podstack_core::{config, platform, Core, Event};
 
 fn main() -> glib::ExitCode {
-    init_logging();
-
     // A restart (after restoring a backup) waits for the old copy to finish exiting before it claims anything.
     if let Some(pid) = std::env::var("PODSTACK_WAIT_PID").ok().and_then(|p| p.parse().ok()) {
         platform::wait_for_exit(pid);
     }
     platform::set_app_id(config::APP_ID);
+    // Claimed before logging starts, so a second launch on Windows doesn't empty the running copy's log file.
     let raised = match platform::claim_instance(config::APP_ID) {
         platform::Instance::First { raised } => raised,
-        platform::Instance::AlreadyRunning => {
-            tracing::info!("PodStack is already running; asked it to show its window");
-            return glib::ExitCode::SUCCESS;
-        }
+        platform::Instance::AlreadyRunning => return glib::ExitCode::SUCCESS,
     };
+    init_logging();
 
     let core = Core::load();
     {

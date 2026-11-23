@@ -345,7 +345,11 @@ pub(super) fn card(ctx: &Ctx) -> gtk::Box {
     let card = settings_card(
         "palette",
         "Appearance",
-        Some("Material You colors for the whole app, from your wallpaper, an EVE faction or a color of your own."),
+        Some(if accent.is_some() {
+            "Material You colors for the whole app, from your Windows accent color, an EVE faction or a color of your own."
+        } else {
+            "Material You colors for the whole app, from your wallpaper, an EVE faction or a color of your own."
+        }),
         &[],
     );
     let refresh: Refreshers = Rc::new(RefCell::new(vec![]));

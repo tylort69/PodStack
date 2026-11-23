@@ -1,7 +1,7 @@
 name: Windows
 on:
   push:
-    branches: [master, windows-spike]
+    branches: [master]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
