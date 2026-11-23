@@ -91,6 +91,18 @@ pub const ALERT_TYPES: &[AlertType] = &[
         default_on: false,
     },
     AlertType {
+        id: "login_expired",
+        label: "Login expired",
+        description: "A character's login stopped working (revoked, or its password or account changed) and it needs to be added again.",
+        default_on: true,
+    },
+    AlertType {
+        id: "scopes_missing",
+        label: "New permissions needed",
+        description: "PodStack uses permissions a character's login doesn't have, e.g. after an update adds a feature. Alerts once per set of missing permissions; turn it off if you declined some on purpose.",
+        default_on: true,
+    },
+    AlertType {
         id: "calendar_event",
         label: "Calendar event soon",
         description: "A calendar event starts within the hour.",
@@ -268,6 +280,28 @@ pub enum Notice {
 #[derive(Clone, Debug, Default)]
 pub struct Extras {
     pub farms: HashMap<i64, i64>,
+    /// Each character's login: what it's missing and whether it still works.
+    pub logins: HashMap<i64, Login>,
+}
+
+/// A character's login, as far as alerts care.
+#[derive(Clone, Debug, Default)]
+pub struct Login {
+    /// Scopes PodStack uses that this login doesn't grant.
+    pub missing: Vec<&'static str>,
+    /// Refreshing failed in a way only logging in again fixes.
+    pub expired: bool,
+    pub error: Option<String>,
+}
+
+impl Login {
+    pub fn of(a: &crate::auth::AuthorizedCharacter) -> Self {
+        Login {
+            missing: a.missing_scopes(),
+            expired: a.needs_reauth(),
+            error: a.last_refresh.as_ref().and_then(|r| r.error.clone()),
+        }
+    }
 }
 
 fn countdown(d: Duration) -> String {
@@ -356,6 +390,33 @@ pub fn character_conditions(c: &Character, settings: &AlertSettings, extras: &Ex
     let mut add = |kind: &'static str, what: String, title: String, body: String| {
         out.push(Condition { key: format!("{kind}:{what}"), kind, character_id: c.id, title, body });
     };
+
+    // the login: expired, or missing permissions PodStack now uses (the key names the missing set, so a newly
+    // added permission alerts again while ones already declined don't)
+    if let Some(login) = extras.logins.get(&c.id) {
+        if login.expired {
+            let why = login.error.as_deref().map(|e| format!(" ({e})")).unwrap_or_default();
+            add(
+                "login_expired",
+                c.id.to_string(),
+                format!("{name}: login expired"),
+                format!("PodStack can't refresh {name} until the character is added again with Add character{why}."),
+            );
+        }
+        if !login.missing.is_empty() {
+            let mut missing = login.missing.clone();
+            missing.sort_unstable();
+            let names: Vec<&str> =
+                missing.iter().map(|m| crate::config::SCOPES.iter().find(|s| s.name == *m).map(|s| s.description).unwrap_or(m)).collect();
+            let list = if names.len() > 4 { format!("{} and {} more", names[..3].join(", "), names.len() - 3) } else { names.join(", ") };
+            add(
+                "scopes_missing",
+                format!("{}:{}", c.id, missing.join(",")),
+                format!("{name}: new permissions needed"),
+                format!("Not granted: {list}. Log {name} in again with Add character to grant them (on your own EVE application, enable them first)."),
+            );
+        }
+    }
 
     // skill queue: empty, or ending within the threshold
     let queue_end = c.queue().iter().filter_map(|q| q.finish_date).filter(|f| *f > now).max();
@@ -649,7 +710,8 @@ pub struct Delivery {
 /// Discord, each by its own settings.
 pub fn check(core: &Core, now: DateTime<Utc>) -> Delivery {
     let settings: AlertSettings = core.setting(SETTINGS_KEY);
-    let extras = Extras { farms: farms_from_doc(&store::load_doc::<Value>("farms")) };
+    let logins = core.auth.all().iter().map(|a| (a.id, Login::of(a))).collect();
+    let extras = Extras { farms: farms_from_doc(&store::load_doc::<Value>("farms")), logins };
     let chars = core.characters();
     let conditions: Vec<Condition> = chars.iter().flat_map(|c| character_conditions(c, &settings, &extras, now)).collect();
     let ids: Vec<i64> = chars.iter().map(|c| c.id).collect();
@@ -681,6 +743,40 @@ pub fn clear_log(core: &Core) {
         store::save_doc(STATE_DOC, &state);
     }
     core.emit(Event::Doc(STATE_DOC.into()));
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+    use crate::domains::info::Info;
+
+    #[test]
+    fn login_alerts_are_their_own_and_track_the_missing_set() {
+        let mut c = Character::new(7);
+        c.info = Some(Info { name: "Kira".into(), corporation_id: 1, ..Default::default() });
+        let s = AlertSettings::default();
+        let now = Utc::now();
+        let mut extras = Extras::default();
+        extras.logins.insert(7, Login { missing: vec!["esi-characters.read_blueprints.v1"], expired: false, error: None });
+        let conds = |e: &Extras| character_conditions(&c, &s, e, now).into_iter().filter(|x| x.kind == "scopes_missing" || x.kind == "login_expired").collect::<Vec<_>>();
+        let one = conds(&extras);
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].kind, "scopes_missing");
+        assert!(one[0].body.contains("Read Blueprints"), "{}", one[0].body);
+        // a newly required scope changes the key, so it alerts again
+        extras.logins.get_mut(&7).unwrap().missing.push("esi-contracts.read_corporation_contracts.v1");
+        let two = conds(&extras);
+        assert_ne!(one[0].key, two[0].key);
+        // an expired login is a separate alert
+        extras.logins.insert(7, Login { missing: vec![], expired: true, error: Some("invalid_grant".into()) });
+        let e = conds(&extras);
+        assert_eq!((e.len(), e[0].kind), (1, "login_expired"));
+        assert!(e[0].body.contains("invalid_grant"));
+        // each has its own switch
+        let mut off = AlertSettings::default();
+        off.set("scopes_missing", false);
+        assert!(off.is_on("login_expired") && !off.is_on("scopes_missing"));
+    }
 }
 
 #[cfg(test)]

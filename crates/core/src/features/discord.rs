@@ -107,8 +107,8 @@ pub fn save(c: &DiscordConfig) {
 /// things done, blue otherwise.
 fn color(kind: &str) -> u32 {
     match kind {
-        "queue_empty" | "omega_lapsed" | "courier_due" | "extractor_expired" => 0xE5484D,
-        "queue_low" | "calendar_event" | "contract_assigned" => 0xF5A524,
+        "queue_empty" | "omega_lapsed" | "courier_due" | "extractor_expired" | "login_expired" => 0xE5484D,
+        "queue_low" | "calendar_event" | "contract_assigned" | "scopes_missing" => 0xF5A524,
         "injector_ready" | "industry_ready" | "contract_finished" | "market_order" | "fatigue_ended" => 0x30A46C,
         _ => 0x3E8ED0,
     }
