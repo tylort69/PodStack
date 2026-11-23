@@ -440,6 +440,11 @@ impl Core {
                 tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
             }
         });
+        // demo data and screenshots: show what's on disk without logging anyone in or fetching anything
+        if std::env::var_os("PODSTACK_OFFLINE").is_some() {
+            tracing::info!("PODSTACK_OFFLINE: not refreshing characters");
+            return;
+        }
         let core = self.clone();
         tokio::spawn(async move {
             let sem = Arc::new(tokio::sync::Semaphore::new(CHARACTERS_AT_ONCE));

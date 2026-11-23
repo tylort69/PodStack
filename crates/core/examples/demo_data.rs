@@ -3,6 +3,9 @@
 //! For UI testing and screenshots, never for a real data directory.
 //!
 //!     cargo run -p podstack-core --example demo_data -- <empty data dir> [cache dir]
+//!     PODSTACK_OFFLINE=1 PODSTACK_DATA_DIR=<data dir> PODSTACK_CACHE_DIR=<cache dir> cargo run
+//!
+//! (`PODSTACK_OFFLINE` keeps PodStack from refreshing the demo characters, whose logins aren't real.)
 //!
 //! Doctrine fits are looked up through ESI (as importing them in the app does), so this needs a connection.
 
@@ -208,15 +211,15 @@ async fn main() {
     let now = Utc::now();
     let mut rng = Rng(0x5eed_1234_abcd);
 
-    // auth: every token fails to refresh, so nothing is fetched over the demo data
+    // auth: tokens that look fine but don't work; run PodStack with PODSTACK_OFFLINE=1 so it doesn't try them
     let mut auth = serde_json::Map::new();
     for (id, name, _) in CHARS {
         auth.insert(
             id.to_string(),
             serde_json::json!({
-                "id": id, "name": name, "access_token": "demo", "access_token_expiry": now - Duration::days(1),
+                "id": id, "name": name, "access_token": "demo", "access_token_expiry": now + Duration::days(3650),
                 "refresh_token": "demo", "client_id": "demo", "scopes": podstack_core::config::scope_names(),
-                "last_refresh": { "date": now, "success": false, "error": "Demo data", "should_retry": false },
+                "last_refresh": { "date": now, "success": true },
                 "added": now - Duration::days(400) + Duration::minutes(id - 90000000),
             }),
         );

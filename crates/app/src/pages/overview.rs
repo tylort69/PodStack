@@ -117,6 +117,9 @@ fn roster_row(ctx: &Ctx, c: &Character, updaters: &Updaters) -> gtk::Widget {
     // training
     let training = w::vbox(4);
     training.set_size_request(260, -1);
+    // a fixed column: the skill name's own expansion mustn't pull spare width from the name column, or rows
+    // that are training would line up differently from idle ones
+    training.set_hexpand(false);
     training.set_valign(gtk::Align::Center);
     match c.current_skill() {
         Some(q) => {
@@ -153,7 +156,11 @@ fn roster_row(ctx: &Ctx, c: &Character, updaters: &Updaters) -> gtk::Widget {
             update();
             updaters.add(update);
         }
-        None => training.append(&fleet::not_training()),
+        None => {
+            let s = fleet::not_training();
+            s.set_halign(gtk::Align::Start);
+            training.append(&s);
+        }
     }
     row.append(&training);
     row.upcast()
