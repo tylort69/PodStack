@@ -140,14 +140,17 @@ fn csv_field(s: &str) -> String {
     }
 }
 
-/// Machine slots of each kind across the characters: (manufacturing, science, reactions).
-fn slots(cx: &Context) -> (usize, usize, usize) {
+/// Machine slots of each kind among the characters building the project: (manufacturing, science, reactions).
+/// Without characters, `builder_count` characters with every skill at V.
+pub(super) fn slots(cx: &Context, choices: &mf::PlanChoices) -> (usize, usize, usize) {
     let data = &*INDUSTRY;
-    if cx.characters.is_empty() {
+    let builders: Vec<_> = cx.characters.iter().filter(|c| choices.builders.is_empty() || choices.builders.contains(&c.id)).collect();
+    if builders.is_empty() {
         let (m, s, r) = mf::slots(data, &cx.levels);
-        return (m as usize, s as usize, r as usize);
+        let n = choices.builder_count.max(1) as usize;
+        return (m as usize * n, s as usize * n, r as usize * n);
     }
-    cx.characters.iter().fold((0, 0, 0), |acc, c| {
+    builders.iter().fold((0, 0, 0), |acc, c| {
         let (m, s, r) = mf::slots(data, &mf::levels_of(c));
         (acc.0 + m as usize, acc.1 + s as usize, acc.2 + r as usize)
     })
@@ -237,16 +240,15 @@ pub(super) fn view(state: &Rc<State>, project: &Project, plan: &Plan, loading: b
     let haul: f64 = plan.purchases.iter().map(|p| p.to_buy as f64 * volume(p.type_id)).sum();
     let out: f64 = project.targets.iter().map(|(t, q)| *q as f64 * volume(*t)).sum();
     let volume_tile = w::stat_tile("Materials to haul", &format!("{} m³", fmt::decimal(haul, 0)), Some(&format!("Products {} m³", fmt::decimal(out, 0))));
-    let slots = slots(&state.cx);
+    let slots = slots(&state.cx, &project.options);
     let time_tile = w::stat_tile(
         "Build time",
         &common::duration(plan.estimated_time(slots)),
-        Some(&format!("On {} manufacturing, {} reaction, {} science slots", slots.0, slots.2, slots.1)),
+        Some(&format!("{} one job at a time", common::duration(plan.serial_time()))),
     );
     time_tile.set_tooltip_text(Some(&format!(
-        "About how long, running every level after the one below it on {}. Job times use {}.",
-        if state.cx.characters.is_empty() { "one character's slots".to_string() } else { format!("all {} characters' slots", state.cx.characters.len()) },
-        state.cx.levels_label
+        "Start to finish on {} manufacturing, {} reaction and {} science slots, each job starting once its parts are done. Job times use {}.",
+        slots.0, slots.2, slots.1, state.cx.levels_label
     )));
     v.append(&w::tile_row(vec![cost_tile, value_tile, jobs_tile, volume_tile, time_tile]));
 
@@ -267,7 +269,10 @@ pub(super) fn view(state: &Rc<State>, project: &Project, plan: &Plan, loading: b
     head.append(&refresh);
     v.append(&head);
 
+    v.append(&super::tree::totals_card(project, plan, &prices, slots));
+    v.append(&super::tree::tree_card(project, plan, &prices));
     v.append(&steps_card(state, project, plan));
+    v.append(&super::tree::jobs_card(plan));
     if !plan.inventions.is_empty() {
         v.append(&inventions_card(plan, &prices));
     }

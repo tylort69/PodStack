@@ -428,6 +428,7 @@ fn rules_card(ctx: &Ctx) -> gtk::Box {
     let num = |v: f64| number_entry(&format!("{v}"), 5);
     let scc = pct(rules.scc_surcharge);
     let npc = pct(rules.npc_facility_tax);
+    let max_tax = pct(rules.max_facility_tax);
     let inv_share = pct(rules.invention_eiv_share);
     let copy_share = pct(rules.copying_eiv_share);
     let inv_me = num(rules.invented_me as f64);
@@ -439,6 +440,7 @@ fn rules_card(ctx: &Ctx) -> gtk::Box {
     b.append(&fields(vec![
         labelled("SCC surcharge %", &scc).upcast(),
         labelled("NPC facility tax %", &npc).upcast(),
+        labelled("Highest facility tax %", &max_tax).upcast(),
         labelled("Invention cost % of EIV", &inv_share).upcast(),
         labelled("Copying cost % of EIV", &copy_share).upcast(),
     ]));
@@ -461,6 +463,7 @@ fn rules_card(ctx: &Ctx) -> gtk::Box {
             let r = Rules {
                 scc_surcharge: p(&scc, old.scc_surcharge),
                 npc_facility_tax: p(&npc, old.npc_facility_tax),
+                max_facility_tax: p(&max_tax, old.max_facility_tax),
                 invention_eiv_share: p(&inv_share, old.invention_eiv_share),
                 copying_eiv_share: p(&copy_share, old.copying_eiv_share),
                 invented_me: n(&inv_me, old.invented_me as f64) as i64,

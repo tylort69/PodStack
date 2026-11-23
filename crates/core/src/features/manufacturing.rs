@@ -10,8 +10,9 @@
 //! - job time: `base × runs × (1 − TE/100) × structure × rigs × skills`, with each skill's per-level bonus from the
 //!   static data (Industry −4%/level, Advanced Industry −3%/level, the T2 science skills −1%/level, …);
 //! - estimated item value (EIV): the sum of adjusted price × base quantity of the materials, per run;
-//! - job cost: `EIV × system cost index × structure/rig cost bonus + EIV × facility tax + EIV × SCC surcharge`;
-//!   invention and copying use a share of the product's EIV;
+//! - job cost: `EIV × (system cost index × structure/rig cost bonus + facility tax + SCC surcharge)`, the formula on
+//!   EVE University's Manufacturing page; the facility tax is capped (10% today); invention and copying use a share
+//!   of the product's EIV;
 //! - invention chance: `base × (1 + (science skill levels)/30 + encryption level/40) × decryptor`.
 
 use crate::blueprints::{Activity, Blueprint, BonusKind, IndustryData, INDUSTRY};
@@ -29,6 +30,8 @@ pub struct Rules {
     pub scc_surcharge: f64,
     /// Facility tax in NPC stations.
     pub npc_facility_tax: f64,
+    /// The most a structure owner can charge as facility tax.
+    pub max_facility_tax: f64,
     /// Share of the product's EIV that invention and copying jobs are charged on.
     pub invention_eiv_share: f64,
     pub copying_eiv_share: f64,
@@ -48,6 +51,7 @@ impl Default for Rules {
         Rules {
             scc_surcharge: 0.04,
             npc_facility_tax: 0.0025,
+            max_facility_tax: 0.10,
             invention_eiv_share: 0.02,
             copying_eiv_share: 0.02,
             invented_me: 2,
@@ -92,7 +96,8 @@ impl Facility {
     }
 
     pub fn tax(&self, rules: &Rules) -> f64 {
-        self.tax.unwrap_or(if self.structure.is_some() { 0.0 } else { rules.npc_facility_tax })
+        let tax = self.tax.unwrap_or(if self.structure.is_some() { 0.0 } else { rules.npc_facility_tax });
+        tax.clamp(0.0, rules.max_facility_tax)
     }
 
     /// The combined structure and rig multiplier for one kind of bonus on a job making `product`.
@@ -193,20 +198,29 @@ pub struct PlanChoices {
     pub overrides: BTreeMap<i64, bool>,
     /// Take materials the characters already have (assets) off the shopping list.
     pub use_stock: bool,
-    /// Longest job in days before it's split into several.
+    /// Longest job in days before it's split into several. Originals have no run limit, but the game doesn't
+    /// take a job longer than 30 days, so a big batch has to be split anyway.
     pub max_job_days: f64,
+    /// Characters whose slots the build time counts on (empty: all of them).
+    pub builders: Vec<i64>,
+    /// Without characters: how many characters (every skill at V) build.
+    pub builder_count: i64,
 }
 
 impl Default for PlanChoices {
     fn default() -> Self {
         PlanChoices {
             build_components: true,
-            build_reactions: false,
+            // A plan builds from the ground up by default: everything with a blueprint or formula, down to minerals,
+            // moon materials, gas, ice products, planetary commodities and salvage.
+            build_reactions: true,
             invent: true,
             decryptor: None,
             overrides: BTreeMap::new(),
             use_stock: false,
             max_job_days: 30.0,
+            builders: Vec::new(),
+            builder_count: 1,
         }
     }
 }
@@ -493,6 +507,8 @@ pub struct Step {
     /// Seconds per job, in the same order as `jobs`.
     pub job_times: Vec<f64>,
     pub job_cost: f64,
+    /// Every job worked out (runs, materials, time, cost breakdown), in the same order as `jobs`.
+    pub details: Vec<JobResult>,
     pub facility: String,
     /// Whether one of the characters has an original of the blueprint.
     pub owned: bool,
@@ -526,7 +542,62 @@ pub struct Plan {
     pub unbuildable: Vec<i64>,
 }
 
+/// A plan's job costs and times added up.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlanTotals {
+    /// Sums of every manufacturing and reaction job's cost parts.
+    pub eiv: f64,
+    pub gross: f64,
+    pub facility_tax: f64,
+    pub scc: f64,
+    /// Expected invention attempts' job costs.
+    pub invention: f64,
+    /// Seconds of jobs per kind: one slot doing them all one after the other.
+    pub manufacturing_time: f64,
+    pub reaction_time: f64,
+    pub invention_time: f64,
+    pub manufacturing_jobs: usize,
+    pub reaction_jobs: usize,
+}
+
+impl PlanTotals {
+    /// Every installation cost: manufacturing, reactions and invention.
+    pub fn job_costs(&self) -> f64 {
+        self.gross + self.facility_tax + self.scc + self.invention
+    }
+}
+
 impl Plan {
+    /// The step that makes `product`, if the plan builds it.
+    pub fn step(&self, product: i64) -> Option<&Step> {
+        self.steps.iter().find(|s| s.product == product)
+    }
+
+    pub fn totals(&self) -> PlanTotals {
+        let mut t = PlanTotals::default();
+        for s in &self.steps {
+            let reaction = s.activity == Some(Activity::Reaction);
+            for j in &s.details {
+                t.eiv += j.cost.eiv;
+                t.gross += j.cost.gross;
+                t.facility_tax += j.cost.facility_tax;
+                t.scc += j.cost.scc;
+                if reaction {
+                    t.reaction_time += j.time;
+                    t.reaction_jobs += 1;
+                } else {
+                    t.manufacturing_time += j.time;
+                    t.manufacturing_jobs += 1;
+                }
+            }
+        }
+        for i in &self.inventions {
+            t.invention += i.invention.cost.total * i.attempts as f64;
+            t.invention_time += i.invention.time * i.attempts as f64;
+        }
+        t
+    }
+
     pub fn job_count(&self) -> usize {
         self.steps.iter().map(|s| s.jobs.len()).sum()
     }
@@ -562,30 +633,123 @@ impl Plan {
         t
     }
 
-    /// About how long the whole plan takes with `slots` (manufacturing, science, reactions) slots: each level runs
-    /// after the levels below it (its materials come from them), reactions and manufacturing of a level side by
-    /// side, and inventions from the start, holding up only the levels that build from invented copies.
+    /// How long the plan takes running one job at a time: every job's duration added up.
+    pub fn serial_time(&self) -> f64 {
+        let t = self.totals();
+        t.manufacturing_time + t.reaction_time + t.invention_time
+    }
+
+    /// About how long the whole plan takes with `slots` (manufacturing, science, reactions) slots, start to finish.
+    /// A job starts once a slot of its kind is free and every part it uses is finished (all jobs of those parts),
+    /// and a blueprint that's invented waits for its inventions. Among the jobs that could start, the one with the
+    /// longest chain of work still after it goes first, so the slowest branch (usually the reactions under the
+    /// capital components) isn't left for last.
     pub fn estimated_time(&self, slots: (usize, usize, usize)) -> f64 {
-        let (manufacturing, science, reactions) = (slots.0.max(1), slots.1.max(1), slots.2.max(1));
-        let attempts: Vec<f64> = self.inventions.iter().flat_map(|i| std::iter::repeat_n(i.invention.time, i.attempts.max(0) as usize)).collect();
-        let invention_done = wall_time(attempts, science);
-        let invented: HashSet<i64> = self.inventions.iter().map(|i| i.invention.blueprint).collect();
-        let deepest = self.steps.iter().map(|s| s.depth).max().unwrap_or(0);
-        let mut t = 0.0;
-        for d in (0..=deepest).rev() {
-            let level: Vec<&Step> = self.steps.iter().filter(|s| s.depth == d).collect();
-            if level.is_empty() {
-                continue;
+        let n = self.steps.len();
+        let index: HashMap<i64, usize> = self.steps.iter().enumerate().map(|(i, s)| (s.product, i)).collect();
+        // children[i]: steps whose products step i uses; parents the other way round
+        let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut parents: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (i, s) in self.steps.iter().enumerate() {
+            for (m, _) in &s.materials {
+                if let Some(&c) = index.get(m) {
+                    if c != i && !children[i].contains(&c) {
+                        children[i].push(c);
+                        parents[c].push(i);
+                    }
+                }
             }
-            if level.iter().any(|s| invented.contains(&s.blueprint)) {
-                t = f64::max(t, invention_done);
-            }
-            let times = |reaction: bool| -> Vec<f64> {
-                level.iter().filter(|s| (s.activity == Some(Activity::Reaction)) == reaction).flat_map(|s| s.job_times.iter().copied()).collect()
-            };
-            t += f64::max(wall_time(times(false), manufacturing), wall_time(times(true), reactions));
         }
-        t
+        let longest = |s: &Step| s.job_times.iter().copied().fold(0.0, f64::max);
+        // The longest path from a step's end to the end of the plan: what's still to do after it.
+        let mut tail = vec![0.0f64; n];
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by_key(|i| self.steps[*i].depth);
+        for &i in &order {
+            tail[i] = parents[i].iter().map(|p| longest(&self.steps[*p]) + tail[*p]).fold(0.0, f64::max);
+        }
+        // Job kinds: 0 manufacturing, 1 science, 2 reactions.
+        struct Job {
+            kind: usize,
+            time: f64,
+            priority: f64,
+            /// The step it belongs to, or `None` for an invention attempt.
+            step: Option<usize>,
+            blueprint: i64,
+        }
+        let mut jobs: Vec<Job> = Vec::new();
+        for (i, s) in self.steps.iter().enumerate() {
+            let kind = if s.activity == Some(Activity::Reaction) { 2 } else { 0 };
+            for t in &s.job_times {
+                jobs.push(Job { kind, time: *t, priority: t + tail[i], step: Some(i), blueprint: s.blueprint });
+            }
+        }
+        let invented: HashMap<i64, i64> = self.inventions.iter().map(|i| (i.invention.blueprint, i.attempts.max(0))).fold(HashMap::new(), |mut m, (b, a)| {
+            *m.entry(b).or_default() += a;
+            m
+        });
+        for inv in &self.inventions {
+            let after = index.get(&self.steps.iter().find(|s| s.blueprint == inv.invention.blueprint).map(|s| s.product).unwrap_or(-1)).map(|i| longest(&self.steps[*i]) + tail[*i]).unwrap_or(0.0);
+            for _ in 0..inv.attempts.max(0) {
+                jobs.push(Job { kind: 1, time: inv.invention.time, priority: inv.invention.time + after, step: None, blueprint: inv.invention.blueprint });
+            }
+        }
+        let capacity = [slots.0.max(1), slots.1.max(1), slots.2.max(1)];
+        let mut jobs_left: Vec<usize> = vec![0; n];
+        for j in &jobs {
+            if let Some(i) = j.step {
+                jobs_left[i] += 1;
+            }
+        }
+        let mut inventions_left: HashMap<i64, i64> = invented;
+        let mut children_left: Vec<usize> = children.iter().map(|c| c.len()).collect();
+        let mut waiting: Vec<usize> = (0..jobs.len()).collect();
+        waiting.sort_by(|a, b| jobs[*b].priority.partial_cmp(&jobs[*a].priority).unwrap_or(std::cmp::Ordering::Equal));
+        // (end, job)
+        let mut running: Vec<(f64, usize)> = Vec::new();
+        let mut busy = [0usize; 3];
+        let mut now = 0.0f64;
+        let mut end = 0.0f64;
+        loop {
+            // Start whatever can start, highest priority first.
+            let mut k = 0;
+            while k < waiting.len() {
+                let j = &jobs[waiting[k]];
+                let ready = match j.step {
+                    None => true,
+                    Some(i) => children_left[i] == 0 && inventions_left.get(&j.blueprint).copied().unwrap_or(0) <= 0,
+                };
+                if ready && busy[j.kind] < capacity[j.kind] {
+                    busy[j.kind] += 1;
+                    running.push((now + j.time, waiting.remove(k)));
+                } else {
+                    k += 1;
+                }
+            }
+            // Finish the job that ends first.
+            let Some(pos) = running.iter().enumerate().min_by(|a, b| a.1 .0.partial_cmp(&b.1 .0).unwrap_or(std::cmp::Ordering::Equal)).map(|(p, _)| p) else { break };
+            let (t, j) = running.swap_remove(pos);
+            now = t;
+            end = end.max(t);
+            let job = &jobs[j];
+            busy[job.kind] -= 1;
+            match job.step {
+                Some(i) => {
+                    jobs_left[i] -= 1;
+                    if jobs_left[i] == 0 {
+                        for p in &parents[i] {
+                            children_left[*p] -= 1;
+                        }
+                    }
+                }
+                None => {
+                    if let Some(left) = inventions_left.get_mut(&job.blueprint) {
+                        *left -= 1;
+                    }
+                }
+            }
+        }
+        end
     }
 }
 
@@ -731,14 +895,17 @@ pub fn plan(targets: &[(i64, i64)], input: &PlanInput) -> Plan {
         let mut materials: BTreeMap<i64, i64> = BTreeMap::new();
         let mut job_times = Vec::new();
         let mut job_cost = 0.0;
+        let mut details = Vec::new();
         for r in &jobs {
             let job = JobInput { runs: *r, ..probe };
             if let Some(j) = manufacture(&job) {
-                for (m, q) in j.materials {
-                    *materials.entry(m).or_default() += q;
+                // Materials round up per job, so two jobs can need more than one job of the same runs.
+                for (m, q) in &j.materials {
+                    *materials.entry(*m).or_default() += q;
                 }
                 job_times.push(j.time);
                 job_cost += j.cost.total;
+                details.push(j);
             }
         }
         for (m, q) in &materials {
@@ -766,6 +933,7 @@ pub fn plan(targets: &[(i64, i64)], input: &PlanInput) -> Plan {
             materials: materials.into_iter().collect(),
             job_times,
             job_cost,
+            details,
             facility: facility.label(),
             owned: owned.is_some(),
         });
@@ -836,6 +1004,133 @@ mod tests {
         assert_eq!(material_amount(0, 10, 10, 1.0), 0);
         // 333 × 3 × 0.9 = 899.1 → 900
         assert_eq!(material_amount(333, 3, 10, 1.0), 900);
+    }
+
+    #[test]
+    fn material_rounding_per_job() {
+        // EVE University's Research page: 31 Tritanium per run at ME 2 is 30.38, so 100 runs need 3038, while
+        // 100 one-run jobs each round up to 31.
+        assert_eq!(material_amount(31, 100, 2, 1.0), 3038);
+        assert_eq!(material_amount(31, 1, 2, 1.0) * 100, 3100);
+        // ME 10 in a Raitaru (1%) with a T1 rig in null (2% × 2.1 = 4.2%): 1000 × 0.9 × 0.99 × 0.958 = 853.578 → 854
+        assert_eq!(material_amount(1000, 1, 10, 0.99 * (1.0 - 0.042)), 854);
+        // an exact whole number doesn't round up: 100 × 10 × 0.9 × 0.99 = 891
+        assert_eq!(material_amount(100, 10, 10, 0.99), 891);
+        assert_eq!(material_amount(10, 10, 10, 0.99), 90);
+        // reactions: no ME, only the refinery's rigs; 100 per run in a T2 rig in null (2.4% × 1.1)
+        assert_eq!(material_amount(100, 37, 0, 1.0 - 0.024 * 1.1), 3603);
+        assert_eq!(material_amount(5, 37, 0, 1.0 - 0.024 * 1.1), 181);
+    }
+
+    #[test]
+    fn install_cost() {
+        let data = &*INDUSTRY;
+        let rules = Rules::default();
+        let bp = data.blueprint(691).unwrap();
+        let act = bp.activity(Activity::Manufacturing).unwrap();
+        // made-up adjusted prices for the Rifter's materials
+        let adjusted: HashMap<i64, f64> = act.materials.iter().enumerate().map(|(i, (t, _))| (*t, 3.5 + i as f64)).collect();
+        let eiv_run: f64 = act.materials.iter().map(|(t, q)| adjusted[t] * *q as f64).sum();
+        assert!((eiv_per_run(bp, Activity::Manufacturing, &adjusted) - eiv_run).abs() < 1e-6);
+        let tama = 30002813;
+        let mut indices = CostIndices::new();
+        indices.insert(tama, HashMap::from([("manufacturing".to_string(), 0.0512)]));
+        let raitaru = Facility { structure: Some(35825), system_id: tama, tax: Some(0.01), ..Default::default() };
+        let bonus = raitaru.multiplier(data, Activity::Manufacturing, BonusKind::Cost, 587);
+        assert!((bonus - 0.97).abs() < 1e-9, "the Raitaru's 3% job cost bonus: {bonus}");
+        let levels = Levels::new();
+        let j = manufacture(&JobInput {
+            blueprint: bp,
+            runs: 7,
+            me: 10,
+            te: 20,
+            facility: &raitaru,
+            levels: &levels,
+            adjusted: &adjusted,
+            indices: Some(&indices),
+            rules: &rules,
+        })
+        .unwrap();
+        // EIV counts the blueprint's base quantities (ME 0) for every run, whatever the ME
+        let eiv = eiv_run * 7.0;
+        assert!((j.cost.eiv - eiv).abs() < 1e-6);
+        assert!((j.cost.total - eiv * (0.0512 * 0.97 + 0.01 + 0.04)).abs() < 1e-6, "{:?}", j.cost);
+        assert!((j.cost.gross - eiv * 0.0512 * 0.97).abs() < 1e-6);
+        assert!((j.cost.facility_tax - eiv * 0.01).abs() < 1e-6);
+        assert!((j.cost.scc - eiv * 0.04).abs() < 1e-6);
+        // owners can't charge more than the cap; NPC stations charge the NPC rate
+        let greedy = Facility { tax: Some(0.5), ..raitaru.clone() };
+        assert!((greedy.tax(&rules) - 0.10).abs() < 1e-12);
+        assert!((Facility::npc(tama).tax(&rules) - 0.0025).abs() < 1e-12);
+        // no index for the system (not loaded yet): only the taxes
+        let j = manufacture(&JobInput { indices: None, facility: &Facility::npc(tama), runs: 1, blueprint: bp, me: 0, te: 0, levels: &levels, adjusted: &adjusted, rules: &rules }).unwrap();
+        assert!((j.cost.total - eiv_run * (0.0025 + 0.04)).abs() < 1e-6);
+    }
+
+    /// A titan from the ground up: every part with a blueprint or formula is built, everything else bought, and
+    /// every unit one job uses comes from another job or the shopping list.
+    #[test]
+    fn titan_from_the_ground_up() {
+        let data = &*INDUSTRY;
+        let rules = Rules::default();
+        let doc = IndustryDoc::default();
+        let choices = PlanChoices::default();
+        assert!(choices.build_components && choices.build_reactions);
+        let levels = all_five();
+        let (owned, stock, adjusted) = (HashMap::new(), HashMap::new(), no_prices());
+        let input = PlanInput { choices: &choices, doc: &doc, levels: &levels, owned: &owned, stock: &stock, adjusted: &adjusted, indices: None, rules: &rules };
+        let avatar = 11567;
+        let p = plan(&[(avatar, 1)], &input);
+        assert!(p.unbuildable.is_empty());
+        let top = p.step(avatar).unwrap();
+        assert_eq!((top.depth, top.runs, top.me, top.te), (0, 1, rules.assumed_me, rules.assumed_te));
+        assert!(p.steps.iter().any(|s| s.activity == Some(Activity::Reaction) && s.depth >= 3), "reactions several levels down");
+        assert!(p.steps.iter().any(|s| data.type_name(s.product).ends_with("Fuel Block")), "fuel blocks for the reactions");
+        assert!(p.steps.iter().any(|s| data.type_name(s.product) == "Capital Armor Plates"));
+        for b in &p.purchases {
+            assert!(data.maker(b.type_id).is_none(), "{} is bought but has a blueprint", data.type_name(b.type_id));
+        }
+        // what every job uses, added up
+        let mut used: HashMap<i64, i64> = HashMap::new();
+        for s in &p.steps {
+            assert_eq!(s.details.len(), s.jobs.len());
+            assert_eq!(s.jobs.iter().sum::<i64>(), s.runs);
+            let mut sum: BTreeMap<i64, i64> = BTreeMap::new();
+            for (j, runs) in s.details.iter().zip(&s.jobs) {
+                assert_eq!(j.runs, *runs);
+                for (m, q) in &j.materials {
+                    *sum.entry(*m).or_default() += q;
+                }
+            }
+            assert_eq!(sum.into_iter().collect::<Vec<_>>(), s.materials, "{}", data.type_name(s.product));
+            for (m, q) in &s.materials {
+                *used.entry(*m).or_default() += q;
+            }
+            // a parent is always planned before (less deep than) its parts
+            for (m, _) in &s.materials {
+                if let Some(child) = p.step(*m) {
+                    assert!(child.depth > s.depth, "{} under {}", data.type_name(*m), data.type_name(s.product));
+                }
+            }
+        }
+        for s in p.steps.iter().filter(|s| s.product != avatar) {
+            let per_run = data.maker(s.product).unwrap().0.output().unwrap().2.quantity;
+            assert_eq!(s.needed, used[&s.product], "{}", data.type_name(s.product));
+            assert_eq!(s.runs, (s.needed + per_run - 1) / per_run);
+            assert!(s.produced >= s.needed && s.produced - s.needed < per_run);
+        }
+        for b in &p.purchases {
+            assert_eq!(b.needed, used[&b.type_id], "{}", data.type_name(b.type_id));
+        }
+        assert!(p.purchases.iter().any(|b| b.type_id == 34), "tritanium");
+        let t = p.totals();
+        assert_eq!(t.manufacturing_jobs + t.reaction_jobs, p.job_count());
+        assert!(t.reaction_time > 0.0 && t.manufacturing_time > 0.0);
+        // buying reactions instead leaves moon materials off the list and composites on it
+        let choices = PlanChoices { build_reactions: false, ..PlanChoices::default() };
+        let p = plan(&[(avatar, 1)], &PlanInput { choices: &choices, ..input });
+        assert!(p.steps.iter().all(|s| s.activity != Some(Activity::Reaction)));
+        assert!(p.purchases.iter().any(|b| data.maker(b.type_id).is_some_and(|m| m.1 == Activity::Reaction)));
     }
 
     #[test]
@@ -940,24 +1235,40 @@ mod tests {
 
     #[test]
     fn estimates_plan_time() {
-        let step = |product: i64, depth: usize, activity: Activity, job_times: Vec<f64>| Step { product, blueprint: product + 1, activity: Some(activity), depth, job_times, ..Step::default() };
+        let step = |product: i64, depth: usize, activity: Activity, job_times: Vec<f64>, uses: &[i64]| Step {
+            product,
+            blueprint: product + 100,
+            activity: Some(activity),
+            depth,
+            jobs: vec![1; job_times.len()],
+            job_times,
+            materials: uses.iter().map(|u| (*u, 1)).collect(),
+            ..Step::default()
+        };
+        // 4 is made from 3, which is made from 1 (two reaction jobs) and 2
         let mut p = Plan {
             steps: vec![
-                step(1, 2, Activity::Reaction, vec![100.0, 100.0]),
-                step(2, 2, Activity::Manufacturing, vec![50.0]),
-                step(3, 1, Activity::Manufacturing, vec![30.0, 30.0, 30.0]),
-                step(4, 0, Activity::Manufacturing, vec![10.0]),
+                step(1, 2, Activity::Reaction, vec![100.0, 100.0], &[]),
+                step(2, 2, Activity::Manufacturing, vec![50.0], &[]),
+                step(3, 1, Activity::Manufacturing, vec![30.0, 30.0, 30.0], &[1, 2, 34]),
+                step(4, 0, Activity::Manufacturing, vec![10.0], &[3]),
             ],
             ..Plan::default()
         };
-        // level 2: reactions 200 on one slot (manufacturing 50 alongside), level 1: 90, level 0: 10
-        assert_eq!(p.estimated_time((1, 1, 1)), 300.0);
-        // two reaction slots halve level 2; three manufacturing slots run level 1 at once
+        assert_eq!(p.serial_time(), 0.0, "totals count worked-out jobs only");
+        // one slot each: the reactions take 200 (2's 50 alongside), then 3's three jobs, then 4
+        assert_eq!(p.estimated_time((1, 1, 1)), 200.0 + 90.0 + 10.0);
+        // two reaction slots run both at once; three manufacturing slots run 3's jobs at once
         assert_eq!(p.estimated_time((3, 1, 2)), 100.0 + 30.0 + 10.0);
-        // an invention of the target's blueprint that takes longer than the levels below it holds up the target
-        p.inventions.push(InventionStep { invention: Invention { blueprint: 5, time: 1000.0, ..Invention::default() }, copies: 1, attempts: 2 });
+        // a part nothing waits on runs alongside: 5 (500 s) only feeds the target
+        p.steps.push(step(5, 1, Activity::Manufacturing, vec![500.0], &[]));
+        p.steps[3].materials.push((5, 1));
+        assert_eq!(p.estimated_time((3, 1, 2)), 500.0 + 10.0);
+        // an invention of the target's blueprint that takes longer than everything below it holds up the target
+        p.inventions.push(InventionStep { invention: Invention { blueprint: 104, time: 1000.0, ..Invention::default() }, copies: 1, attempts: 2 });
         assert_eq!(p.estimated_time((3, 1, 2)), 2000.0 + 10.0);
         assert_eq!(p.estimated_time((3, 2, 2)), 1000.0 + 10.0);
         assert_eq!(Plan::default().estimated_time((0, 0, 0)), 0.0);
     }
+
 }

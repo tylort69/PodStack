@@ -3,10 +3,12 @@
 //! is worked out on the GTK thread whenever either changes, then priced at the trade hub off-thread.
 //!
 //! - `targets`: the list of things to build, with fit and list import;
-//! - `results`: tiles, the steps, invention, shopping and blueprint tables.
+//! - `results`: tiles, the steps, invention, shopping and blueprint tables;
+//! - `tree`: totals with the job cost parts, the build tree and every single job.
 
 mod results;
 mod targets;
+mod tree;
 
 use super::common::{self, Context, Prices};
 use super::{scope_failed, tab_bar, Tab};
@@ -409,7 +411,7 @@ impl State {
         let days = gtk::SpinButton::with_range(0.5, 365.0, 0.5);
         days.set_digits(1);
         days.set_value(choices.max_job_days);
-        days.set_tooltip_text(Some("Longer builds are split into several jobs (so they can run on several slots)"));
+        days.set_tooltip_text(Some("Longer batches are split into several jobs. Originals have no run limit, but a job can't take more than 30 days. Every reaction or part of one type is pooled into as few jobs as this allows."));
         {
             let me = self.clone();
             days.connect_value_changed(move |s| {
@@ -419,6 +421,35 @@ impl State {
             });
         }
         fields.insert(&labelled("Longest job (days)", &days), -1);
+        if self.cx.characters.is_empty() {
+            let count = gtk::SpinButton::with_range(1.0, 100.0, 1.0);
+            count.set_value(choices.builder_count.max(1) as f64);
+            count.set_tooltip_text(Some("How many characters (every skill at V) run jobs side by side, for the build time"));
+            let me = self.clone();
+            count.connect_value_changed(move |s| {
+                let v = s.value() as i64;
+                let created = me.with_project(|p| p.options.builder_count = v);
+                me.after_edit(created, true);
+            });
+            fields.insert(&labelled("Characters building", &count), -1);
+        }
+        let buys = choices.overrides.values().filter(|b| !**b).count();
+        if !choices.build_components || !choices.build_reactions || buys > 0 {
+            let all = w::button_icon("account_tree", "Build everything", w::Btn::Tonal);
+            all.set_tooltip_text(Some("Build every part that has a blueprint or formula, reactions included, down to raw materials"));
+            all.set_valign(gtk::Align::End);
+            let me = self.clone();
+            all.connect_clicked(move |_| {
+                me.with_project(|p| {
+                    p.options.build_components = true;
+                    p.options.build_reactions = true;
+                    p.options.overrides.retain(|_, build| *build);
+                });
+                let me = me.clone();
+                glib::idle_add_local_once(move || me.render_all());
+            });
+            fields.insert(&all, -1);
+        }
         if !choices.overrides.is_empty() {
             let n = choices.overrides.len();
             let reset = w::button_icon("restart_alt", &format!("Reset {n} build/buy choice{}", if n == 1 { "" } else { "s" }), w::Btn::Text);
@@ -433,6 +464,9 @@ impl State {
             fields.insert(&reset, -1);
         }
         col.append(&fields);
+        if !self.cx.characters.is_empty() {
+            col.append(&self.builders_row(&choices));
+        }
 
         // where jobs run, from the Facilities tab
         let doc = &self.cx.doc;
@@ -454,6 +488,43 @@ impl State {
         foot.append(&fac);
         col.append(&foot);
         w::card_with("Choices", None, &[], &col)
+    }
+
+    /// Which characters run the jobs: their slots decide how long the build takes from start to finish.
+    fn builders_row(self: &Rc<Self>, choices: &PlanChoices) -> gtk::Box {
+        let row = w::hbox(8);
+        row.append(&w::line("Building", &["label-medium", "dim"]));
+        let flow = gtk::FlowBox::new();
+        flow.set_selection_mode(gtk::SelectionMode::None);
+        flow.set_hexpand(true);
+        flow.set_max_children_per_line(8);
+        for c in &self.cx.characters {
+            let check = gtk::CheckButton::with_label(&c.name());
+            check.set_active(choices.builders.is_empty() || choices.builders.contains(&c.id));
+            check.set_tooltip_text(Some("Count this character's job slots in the build time"));
+            let (me, id) = (self.clone(), c.id);
+            let all: Vec<i64> = self.cx.characters.iter().map(|c| c.id).collect();
+            check.connect_toggled(move |b| {
+                let on = b.is_active();
+                let all = all.clone();
+                let created = me.with_project(|p| {
+                    let mut list = if p.options.builders.is_empty() { all.clone() } else { p.options.builders.clone() };
+                    list.retain(|x| *x != id);
+                    if on {
+                        list.push(id);
+                    }
+                    // everyone (or no one, which counts the same) is stored as the empty list
+                    if list.is_empty() || all.iter().all(|a| list.contains(a)) {
+                        list.clear();
+                    }
+                    p.options.builders = list;
+                });
+                me.after_edit(created, false);
+            });
+            flow.insert(&check, -1);
+        }
+        row.append(&flow);
+        row
     }
 
     /// Works out the plan with the prices loaded so far.
