@@ -18,6 +18,9 @@ pub mod fitting;
 pub mod comms;
 // Contract history, money flows and totals (`contracts`)
 pub mod contracts;
+// Buyback programs, offers and verdicts (`buyback`); public contracts against the market (`deals`)
+pub mod buyback;
+pub mod deals;
 
 // Industry and planetary interaction helpers
 pub mod industry;
