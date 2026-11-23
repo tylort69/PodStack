@@ -12,7 +12,7 @@ native desktop app.
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE.md)
 [![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational.svg)](#install)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust%20%2B%20GTK4-orange.svg)](#building-from-source)
-[![Release](https://img.shields.io/github/v/release/tylort69/PodStack?include_prereleases&label=release)](https://github.com/tylort69/PodStack/releases)
+[![Release](https://img.shields.io/github/v/release/tylort69/PodStack?label=release)](https://github.com/tylort69/PodStack/releases)
 
 [Features](#features) · [Screenshots](#screenshots) · [Install](#install) · [Getting started](#getting-started) ·
 [Privacy](#your-data-and-privacy) · [Building](#building-from-source) · [FAQ](#faq)
@@ -290,8 +290,8 @@ No. PodStack checks CCP's static data releases every few hours and switches to a
 CCP only publishes in patch notes (such as the industry tax rates) can be edited under Industry → Facilities.
 
 **Windows or macOS?**
-This version is Linux-first. The earlier Windows release of PodStack remains available on the
-[releases page](https://github.com/tylort69/PodStack/releases).
+This version is Linux-first. For Windows, the original Electron PodStack is available from
+[1234nin4321/PodStack](https://github.com/1234nin4321/PodStack/releases).
 
 ## Credits
 
