@@ -454,6 +454,62 @@ pub struct Map {
     /// (id, name), by name.
     pub regions: Vec<(i64, String)>,
     systems: HashMap<i64, SolarSystem>,
+    /// Stargate neighbours of each system.
+    gates: HashMap<i64, Vec<i64>>,
+}
+
+/// How a route is picked, like the in-game autopilot's preferences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, Deserialize)]
+pub enum RoutePref {
+    /// Fewest jumps.
+    #[default]
+    Shortest,
+    /// Stays in high-sec whenever a high-sec way exists.
+    Safer,
+    /// Prefers low and null.
+    LessSecure,
+}
+
+impl RoutePref {
+    pub const ALL: [RoutePref; 3] = [RoutePref::Shortest, RoutePref::Safer, RoutePref::LessSecure];
+    pub fn label(self) -> &'static str {
+        match self {
+            RoutePref::Shortest => "Shortest",
+            RoutePref::Safer => "Safer",
+            RoutePref::LessSecure => "Less secure",
+        }
+    }
+}
+
+/// A gate route: every system from start to end (both included).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Route {
+    pub systems: Vec<i64>,
+}
+
+impl Route {
+    pub fn jumps(&self) -> usize {
+        self.systems.len().saturating_sub(1)
+    }
+    /// Systems on the way (start included) by security class: (high, low, null).
+    pub fn security_counts(&self) -> (usize, usize, usize) {
+        let mut out = (0, 0, 0);
+        for s in self.systems.iter().filter_map(|id| MAP.system(*id)) {
+            match s.security_class() {
+                SecurityClass::High => out.0 += 1,
+                SecurityClass::Low => out.1 += 1,
+                SecurityClass::Null => out.2 += 1,
+            }
+        }
+        out
+    }
+    /// The lowest security on the way, as EVE shows it.
+    pub fn min_security(&self) -> Option<f64> {
+        self.systems.iter().filter_map(|id| MAP.system(*id)).map(|s| s.display_security()).reduce(f64::min)
+    }
+    pub fn all_high_sec(&self) -> bool {
+        self.systems.iter().filter_map(|id| MAP.system(*id)).all(|s| s.security_class() == SecurityClass::High)
+    }
 }
 
 impl Map {
@@ -493,6 +549,67 @@ impl Map {
         self.systems.values()
     }
 
+    pub fn neighbours(&self, id: i64) -> &[i64] {
+        self.gates.get(&id).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// The gate route between two systems, or None when no gates connect them (or either is unknown). Safer and
+    /// less secure routes weigh unwanted systems like the autopilot does: a jump into one costs as much as many
+    /// ordinary jumps, so they're only used when there's no other way.
+    pub fn route(&self, from: i64, to: i64, pref: RoutePref) -> Option<Route> {
+        if !self.systems.contains_key(&from) || !self.systems.contains_key(&to) {
+            return None;
+        }
+        if from == to {
+            return Some(Route { systems: vec![from] });
+        }
+        const AVOID: u64 = 50_000;
+        let cost = |id: i64| -> u64 {
+            let high = self.systems.get(&id).map(|s| s.security_class() == SecurityClass::High).unwrap_or(false);
+            match pref {
+                RoutePref::Shortest => 1,
+                RoutePref::Safer if !high => AVOID,
+                RoutePref::LessSecure if high => AVOID,
+                _ => 1,
+            }
+        };
+        let mut dist: HashMap<i64, u64> = HashMap::from([(from, 0)]);
+        let mut prev: HashMap<i64, i64> = HashMap::new();
+        let mut heap = std::collections::BinaryHeap::from([std::cmp::Reverse((0u64, from))]);
+        while let Some(std::cmp::Reverse((d, at))) = heap.pop() {
+            if at == to {
+                break;
+            }
+            if dist.get(&at).is_some_and(|&best| d > best) {
+                continue;
+            }
+            for &next in self.neighbours(at) {
+                let nd = d + cost(next);
+                if dist.get(&next).is_none_or(|&best| nd < best) {
+                    dist.insert(next, nd);
+                    prev.insert(next, at);
+                    heap.push(std::cmp::Reverse((nd, next)));
+                }
+            }
+        }
+        if !prev.contains_key(&to) {
+            return None;
+        }
+        let mut systems = vec![to];
+        let mut at = to;
+        while let Some(&p) = prev.get(&at) {
+            systems.push(p);
+            at = p;
+        }
+        systems.reverse();
+        Some(Route { systems })
+    }
+
+    /// Gate jumps between two systems on the shortest route.
+    pub fn jumps(&self, from: i64, to: i64) -> Option<usize> {
+        self.route(from, to, RoutePref::Shortest).map(|r| r.jumps())
+    }
+
     /// Regions players trade in: known space without the Jove regions nobody can reach.
     pub fn market_regions(&self) -> impl Iterator<Item = &(i64, String)> {
         self.regions.iter().filter(|(id, _)| !UNREACHABLE_REGIONS.contains(id))
@@ -510,6 +627,9 @@ fn load_map() -> Map {
     struct File {
         regions: Vec<(i64, String)>,
         systems: Vec<(i64, String, i64, f64)>,
+        // older snapshots have no gates: routes are then unknown rather than wrong
+        #[serde(default)]
+        gates: Vec<(i64, i64)>,
     }
     let f: File = serde_json::from_str(&static_data::read("universe.json", include_str!("../../../data/universe.json")))
         .expect("universe.json");
@@ -520,7 +640,12 @@ fn load_map() -> Map {
         .into_iter()
         .map(|(id, name, region, security)| (id, SolarSystem { id, name, region, security }))
         .collect();
-    Map { regions, systems }
+    let mut gates: HashMap<i64, Vec<i64>> = HashMap::new();
+    for (a, b) in f.gates {
+        gates.entry(a).or_default().push(b);
+        gates.entry(b).or_default().push(a);
+    }
+    Map { regions, systems, gates }
 }
 
 /// The five empire trade hubs: (name, station, system, region).
@@ -550,6 +675,13 @@ mod market_tests {
         assert_eq!(jita.security_class(), SecurityClass::High);
         assert_eq!(MAP.region_name(10000002), Some("The Forge"));
         assert_eq!(MAP.search_systems("jit", 3)[0].name, "Jita");
+        // the safe Jita to Amarr route never leaves high-sec
+        let short = MAP.route(30000142, 30002187, RoutePref::Shortest).unwrap();
+        let safe = MAP.route(30000142, 30002187, RoutePref::Safer).unwrap();
+        assert!(short.jumps() > 5 && safe.jumps() >= short.jumps());
+        assert!(safe.all_high_sec());
+        assert_eq!(MAP.jumps(30000142, 30000142), Some(0));
+        assert_eq!(MAP.jumps(30000142, 30000144), Some(1), "Jita to Perimeter");
         for (_, station, system, region) in TRADE_HUBS {
             assert_eq!(MAP.system(system).unwrap().region, region, "{station}");
         }

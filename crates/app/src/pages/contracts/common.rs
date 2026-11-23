@@ -1,14 +1,20 @@
-//! Contracts across all characters: open and completed tables with headline numbers. Also the contracts table,
-//! filter bar and contract dialog the character Contracts tab uses.
+//! Shared by the Contracts tabs (and the character Contracts tab): the contracts table and its filter bar, the
+//! contract dialog, the settings dialog and price loading.
 
-use crate::ctx::{Ctx, Page};
+use crate::ctx::Ctx;
+use crate::pages::industry::form::{fields, labelled};
+use crate::rt;
 use crate::pages::market_orders::{label_cell, set_child, type_cell};
 use crate::widgets::{self as w, Btn, Status, Table};
 use chrono::{DateTime, Utc};
 use gtk::prelude::*;
 use podstack_core::domains::contracts::{Contract, ContractItem};
 use podstack_core::features::comms::{self, Tone};
+use podstack_core::features::contracts as ct;
 use podstack_core::fmt;
+use podstack_core::market::BestPrices;
+use podstack_core::sde::TRADE_HUBS;
+use std::collections::HashMap;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -19,35 +25,6 @@ pub const CSS: &str = "
 .comms-isk-in { color: @success; font-weight: 500; }
 .comms-isk-out { color: @error; font-weight: 500; }
 ";
-
-pub fn build(ctx: &Ctx) -> Page {
-    crate::theme::add_css(CSS);
-    let chars = ctx.core().characters();
-    let open = comms::all_contracts(&chars, Some(false));
-    let done = comms::all_contracts(&chars, Some(true));
-    let couriers = open.iter().filter(|(_, c)| c.kind == "courier").count();
-    let in_progress = open.iter().filter(|(_, c)| c.status == "in_progress").count();
-    let outstanding_value: f64 = open.iter().filter_map(|(_, c)| comms::contract_value(c)).filter(|v| *v > 0.0).sum();
-
-    let body = w::page_body();
-    body.set_vexpand(true);
-    body.append(&w::tile_row(vec![
-        w::stat_tile("Open", &open.len().to_string(), Some(&format!("{in_progress} in progress"))),
-        w::stat_tile("Couriers in flight", &couriers.to_string(), None),
-        w::stat_tile("Open value", &format!("{} ISK", fmt::isk_short(outstanding_value)), Some("Prices and rewards")),
-        w::stat_tile("Completed", &done.len().to_string(), Some("Last 30 days")),
-    ]));
-    let missing: Vec<String> = chars.iter().filter(|c| c.contracts.is_none()).map(|c| c.name()).collect();
-    if !missing.is_empty() {
-        body.append(&w::banner(
-            "lock",
-            &format!("No contracts loaded for {} (they may need to log in again to grant Read Contracts).", missing.join(", ")),
-            w::BannerKind::Notice,
-        ));
-    }
-    body.append(&contracts_section(ctx, "contracts", open, done));
-    Page::new("Contracts", body).no_scroll()
-}
 
 /// Open/Completed switch, search and the contracts table.
 pub(crate) fn contracts_section(ctx: &Ctx, key: &str, open: Vec<(i64, Contract)>, done: Vec<(i64, Contract)>) -> gtk::Box {
@@ -356,5 +333,110 @@ pub(crate) fn open_contract(ctx: &Ctx, c: &Contract) {
     let wc = win.clone();
     close.connect_clicked(move |_| wc.close());
     actions.append(&close);
+    win.present();
+}
+
+// ---------- settings ----------
+
+pub fn settings() -> ct::ContractSettings {
+    ct::settings()
+}
+
+/// The price hub's name.
+pub fn hub_name(s: &ct::ContractSettings) -> &'static str {
+    TRADE_HUBS.iter().find(|h| h.1 == s.price_station).map(|h| h.0).unwrap_or("Jita")
+}
+
+/// Best buy and sell orders at the contracts price hub.
+#[derive(Clone, Default)]
+pub struct Prices {
+    pub hub: HashMap<i64, BestPrices>,
+    pub hub_name: String,
+}
+
+impl Prices {
+    /// The unit price items are valued at: the lowest sell order or the highest buy order, as the settings say.
+    pub fn unit(&self, type_id: i64, at_sell: bool) -> Option<f64> {
+        let p = self.hub.get(&type_id)?;
+        if at_sell {
+            p.sell.or(p.buy)
+        } else {
+            p.buy.or(p.sell)
+        }
+    }
+}
+
+/// Loads hub prices for `types` off the GTK thread.
+pub fn load_prices(ctx: &Ctx, mut types: Vec<i64>, force: bool, done: impl FnOnce(Prices) + 'static) {
+    let core = ctx.core().clone();
+    let s = settings();
+    let name = hub_name(&s).to_string();
+    let (station, region) = ct::hub(&s);
+    types.sort();
+    types.dedup();
+    rt::run(
+        async move {
+            let hub = if types.is_empty() { HashMap::new() } else { core.market.best_prices(&core.esi, region, Some(station), &types, force).await };
+            Prices { hub, hub_name: name }
+        },
+        done,
+    )
+}
+
+/// The gear button that opens the contracts settings.
+pub fn settings_button(ctx: &Ctx) -> gtk::Button {
+    let b = w::icon_button("settings", "Contracts settings");
+    let ctx = ctx.clone();
+    b.connect_clicked(move |_| settings_dialog(&ctx));
+    b
+}
+
+fn settings_dialog(ctx: &Ctx) {
+    let doc = ct::load_doc();
+    let s = doc.settings.clone();
+    let (win, content, actions) = w::dialog(ctx, "Contracts settings", 520);
+    let hubs: Vec<&str> = TRADE_HUBS.iter().map(|h| h.0).collect();
+    let hub_dd = w::dropdown(&hubs, TRADE_HUBS.iter().position(|h| h.1 == s.price_station).unwrap_or(0) as u32);
+    let basis = w::dropdown(&["Sell orders", "Buy orders"], if s.value_at_sell { 0 } else { 1 });
+    content.append(&fields(vec![labelled("Value items at", &hub_dd).upcast(), labelled("Price", &basis).upcast()]));
+    let internal = Rc::new(std::cell::Cell::new(s.count_internal));
+    {
+        let internal = internal.clone();
+        content.append(&w::switch_row(
+            "Count contracts between my characters",
+            Some("Moving a ship from a main to an alt is a purchase for the alt; in the all-characters totals it's usually just a transfer."),
+            s.count_internal,
+            move |on| internal.set(on),
+        ));
+    }
+    let note = w::line(
+        "Finished contracts are valued once, at the prices of the day PodStack first sees them finished, so past profit doesn't move with today's market.",
+        &["body-small", "dim"],
+    );
+    note.set_wrap(true);
+    note.set_xalign(0.0);
+    content.append(&note);
+    let cancel = w::button("Cancel", Btn::Text);
+    let save = w::button("Save", Btn::Filled);
+    {
+        let win = win.clone();
+        cancel.connect_clicked(move |_| win.close());
+    }
+    {
+        let (win, ctx, internal) = (win.clone(), ctx.clone(), internal.clone());
+        save.connect_clicked(move |_| {
+            let mut doc = ct::load_doc();
+            doc.settings = ct::ContractSettings {
+                price_station: TRADE_HUBS.get(hub_dd.selected() as usize).map(|h| h.1).unwrap_or(60003760),
+                value_at_sell: basis.selected() == 0,
+                count_internal: internal.get(),
+            };
+            ct::save_doc(ctx.core(), &doc);
+            win.close();
+            ctx.rebuild();
+        });
+    }
+    actions.append(&cancel);
+    actions.append(&save);
     win.present();
 }

@@ -16,6 +16,8 @@ pub mod fitting;
 
 // Mail bodies, contracts and wallet helpers
 pub mod comms;
+// Contract history, money flows and totals (`contracts`)
+pub mod contracts;
 
 // Industry and planetary interaction helpers
 pub mod industry;

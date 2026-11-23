@@ -80,6 +80,9 @@ pub struct Character {
     pub mail: Option<mail::MailData>,
     #[serde(default)]
     pub contracts: Option<contracts::ContractsData>,
+    /// The character's corporation's contracts.
+    #[serde(default)]
+    pub corp_contracts: Option<contracts::ContractsData>,
     #[serde(default)]
     pub wallet_journal: Option<wallet::JournalData>,
     #[serde(default)]

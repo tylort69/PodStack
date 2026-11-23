@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::OnceLock;
 
 /// Bumped whenever the converted files change shape, so caches written by an older PodStack are converted again.
-pub const FORMAT: u32 = 2;
+pub const FORMAT: u32 = 3;
 
 const LATEST_URL: &str = "https://developers.eveonline.com/static-data/tranquility/latest.jsonl";
 /// How often to ask CCP whether there's a newer build.
@@ -309,6 +309,20 @@ struct RawRegion {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct RawStargate {
+    #[serde(rename = "solarSystemID")]
+    system: i64,
+    destination: RawGateEnd,
+}
+
+#[derive(Deserialize)]
+struct RawGateEnd {
+    #[serde(rename = "solarSystemID")]
+    system: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RawSystem {
     #[serde(rename = "_key")]
     id: i64,
@@ -519,7 +533,15 @@ fn convert(open: &Opener, out: &Path, info: &BuildInfo) -> Result<(), String> {
     })?;
     systems.sort_by_key(|s| s.0);
     let known_systems: HashSet<i64> = systems.iter().map(|s| s.0).collect();
-    write("universe.json", &serde_json::json!({ "regions": regions, "systems": systems }))?;
+    // Stargate links between known-space systems, each pair once, for routes and jump counts.
+    let mut gates: BTreeSet<(i64, i64)> = BTreeSet::new();
+    each::<RawStargate>(open, "mapStargates", |g| {
+        let (a, b) = (g.system, g.destination.system);
+        if known_systems.contains(&a) && known_systems.contains(&b) {
+            gates.insert((a.min(b), a.max(b)));
+        }
+    })?;
+    write("universe.json", &serde_json::json!({ "regions": regions, "systems": systems, "gates": gates }))?;
 
     // industry
     let mut groups: HashMap<i64, RawGroup> = HashMap::new();

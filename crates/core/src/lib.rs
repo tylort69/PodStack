@@ -14,6 +14,7 @@ pub mod features;
 pub mod fmt;
 pub mod market;
 pub mod pi;
+pub mod public_contracts;
 pub mod sde;
 pub mod sso;
 pub mod static_data;
@@ -123,6 +124,7 @@ pub struct Core {
     pub auth: auth::AuthStore,
     pub universe: universe::Universe,
     pub market: market::Market,
+    pub public_contracts: public_contracts::PublicContracts,
     chars: RwLock<BTreeMap<i64, Arc<Character>>>,
     settings: RwLock<Settings>,
     tx: broadcast::Sender<Event>,
@@ -154,6 +156,7 @@ impl Core {
             auth,
             universe: universe::Universe::load(),
             market: market::Market::load(),
+            public_contracts: public_contracts::PublicContracts::load(),
             chars: RwLock::new(chars),
             settings: RwLock::new(store::read_json(&settings_path()).unwrap_or_default()),
             tx,

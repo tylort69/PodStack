@@ -1,4 +1,6 @@
-//! Character contracts (with items for item exchanges/auctions), parties and locations resolved.
+//! Contracts (with items for item exchanges and auctions, and bids for auctions), parties and locations resolved:
+//! the character's own, and its corporation's. ESI only lists the last 30 days; every contract seen is also kept in
+//! `features::contracts`' archive, so history outlives that.
 
 use super::{Cx, DomainResult, DomainSpec};
 use crate::domain;
@@ -9,8 +11,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 const SCOPE: &str = "esi-contracts.read_character_contracts.v1";
+pub const CORP_SCOPE: &str = "esi-contracts.read_corporation_contracts.v1";
 
-pub const DOMAINS: &[DomainSpec] = &[domain!("contracts", "Contracts", 3600, refresh_contracts)];
+pub const DOMAINS: &[DomainSpec] = &[
+    domain!("contracts", "Contracts", 3600, refresh_contracts),
+    domain!("corp_contracts", "Corporation contracts", 3600, refresh_corp_contracts),
+];
+
+/// A bid on an auction.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Bid {
+    pub bid_id: i64,
+    pub bidder_id: i64,
+    pub amount: f64,
+    pub date_bid: DateTime<Utc>,
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct ContractItem {
@@ -90,6 +105,9 @@ pub struct Contract {
     /// Whether `items` has been fetched (it never changes after, so it's kept across refreshes).
     #[serde(default)]
     pub items_loaded: bool,
+    /// Bids of auctions, highest first.
+    #[serde(default)]
+    pub bids: Vec<Bid>,
 }
 
 impl Contract {
@@ -98,6 +116,18 @@ impl Contract {
     }
     pub fn has_items(&self) -> bool {
         matches!(self.kind.as_str(), "item_exchange" | "auction")
+    }
+    /// Finished successfully (as opposed to expired, deleted, failed, …).
+    pub fn is_finished(&self) -> bool {
+        matches!(self.status.as_str(), "finished" | "finished_issuer" | "finished_contractor")
+    }
+    /// What an auction went for: its highest bid (the buyout is a bid too), else the opening price.
+    pub fn auction_price(&self) -> Option<f64> {
+        self.bids.iter().map(|b| b.amount).reduce(f64::max).or(self.price)
+    }
+    /// When it ended or, while open, when it was accepted or issued.
+    pub fn last_date(&self) -> DateTime<Utc> {
+        self.date_completed.or(self.date_accepted).unwrap_or(self.date_issued)
     }
 }
 
@@ -179,6 +209,7 @@ fn build(
     names: &HashMap<i64, String>,
     places: &HashMap<i64, Place>,
     items: &HashMap<i64, Vec<ContractItem>>,
+    bids: &HashMap<i64, Vec<Bid>>,
 ) -> ContractsData {
     let slots_used = raw.iter().filter(|c| uses_slot(c, character_id)).count() as u32;
     let name = |id: i64| names.get(&id).cloned();
@@ -215,6 +246,7 @@ fn build(
                 end_location: c.end_location_id.and_then(|i| places.get(&i).cloned()),
                 items_loaded: items.contains_key(&c.contract_id),
                 items: items.get(&c.contract_id).cloned().unwrap_or_default(),
+                bids: bids.get(&c.contract_id).cloned().unwrap_or_default(),
                 kind: c.kind,
             }
         })
@@ -224,19 +256,58 @@ fn build(
 }
 
 async fn refresh_contracts(cx: &Cx) -> DomainResult {
-    let raw: Vec<RawContract> = cx.get(cx.char_path("contracts")).scope(SCOPE).all_pages().await?;
+    let data = fetch(cx, &cx.char_path(""), SCOPE, cx.prev.contracts.as_ref()).await?;
+    crate::features::contracts::archive(&cx.core, cx.id, None, &data.contracts);
+    crate::features::contracts::value_new(cx).await;
+    Ok(Box::new(move |c| c.contracts = Some(data)))
+}
+
+/// The corporation's contracts: what it issued, accepted or was assigned (a buyback or courier corporation's work).
+async fn refresh_corp_contracts(cx: &Cx) -> DomainResult {
+    let Some(corp) = cx.prev.info.as_ref().map(|i| i.corporation_id).filter(|c| *c > 0) else {
+        return Ok(Box::new(|_| {}));
+    };
+    // NPC corporations have no contracts of their own
+    if (1_000_000..2_000_000).contains(&corp) {
+        return Ok(Box::new(|c| c.corp_contracts = Some(ContractsData::default())));
+    }
+    let base = format!("corporations/{corp}/");
+    let mut data = fetch(cx, &base, CORP_SCOPE, cx.prev.corp_contracts.as_ref()).await?;
+    // slots are the character's own business
+    data.slots_used = 0;
+    crate::features::contracts::archive(&cx.core, cx.id, Some(corp), &data.contracts);
+    crate::features::contracts::value_new(cx).await;
+    Ok(Box::new(move |c| c.corp_contracts = Some(data)))
+}
+
+/// Contracts under `base` ("characters/<id>/" or "corporations/<id>/"), with items and bids; what `prev` already
+/// has of either is kept rather than asked for again.
+async fn fetch(cx: &Cx, base: &str, scope: &'static str, prev: Option<&ContractsData>) -> Result<ContractsData, crate::esi::EsiError> {
+    let raw: Vec<RawContract> = cx.get(format!("{base}contracts")).scope(scope).all_pages().await?;
 
     let ids = raw.iter().flat_map(|c| [Some(c.issuer_id), Some(c.issuer_corporation_id), party(c.assignee_id), party(c.acceptor_id)]).flatten().collect::<Vec<i64>>();
     let names = cx.universe().names(cx.esi(), ids).await;
     let location_ids: Vec<i64> = raw.iter().flat_map(|c| [c.start_location_id, c.end_location_id]).flatten().collect();
     let places = cx.universe().places(cx.esi(), location_ids, Some(&cx.auth)).await;
 
-    // items never change, so only contracts not seen before are asked for theirs
+    // items never change, so only contracts not seen before are asked for theirs; the archive may have them too
+    // (a contract seen by another of the user's characters)
     let mut items: HashMap<i64, Vec<ContractItem>> = HashMap::new();
-    if let Some(prev) = &cx.prev.contracts {
-        for c in prev.contracts.iter().filter(|c| c.items_loaded) {
-            items.insert(c.contract_id, c.items.clone());
+    let mut bids: HashMap<i64, Vec<Bid>> = HashMap::new();
+    if let Some(prev) = prev {
+        for c in &prev.contracts {
+            if c.items_loaded {
+                items.insert(c.contract_id, c.items.clone());
+            }
+            // bids stop changing once the auction is over
+            if c.kind == "auction" && c.is_completed() {
+                bids.insert(c.contract_id, c.bids.clone());
+            }
         }
+    }
+    let archived = crate::features::contracts::known_items(raw.iter().map(|c| c.contract_id));
+    for (id, list) in archived {
+        items.entry(id).or_insert(list);
     }
     let wanted: Vec<i64> = raw
         .iter()
@@ -244,7 +315,7 @@ async fn refresh_contracts(cx: &Cx) -> DomainResult {
         .map(|c| c.contract_id)
         .collect();
     let fetched = futures::future::join_all(wanted.iter().map(|id| async move {
-        let r = cx.get(cx.char_path(&format!("contracts/{id}/items"))).scope(SCOPE).json::<Vec<RawItem>>().await;
+        let r = cx.get(format!("{base}contracts/{id}/items")).scope(scope).json::<Vec<RawItem>>().await;
         (*id, r)
     }))
     .await;
@@ -259,6 +330,21 @@ async fn refresh_contracts(cx: &Cx) -> DomainResult {
                 raw_items.insert(id, vec![]);
             }
             Err(e) => tracing::debug!("contract {id} items: {e}"),
+        }
+    }
+    let wanted_bids: Vec<i64> = raw.iter().filter(|c| c.kind == "auction" && !bids.contains_key(&c.contract_id)).map(|c| c.contract_id).collect();
+    let fetched = futures::future::join_all(wanted_bids.iter().map(|id| async move {
+        let r = cx.get(format!("{base}contracts/{id}/bids")).scope(scope).json::<Vec<Bid>>().await;
+        (*id, r)
+    }))
+    .await;
+    for (id, r) in fetched {
+        match r {
+            Ok(mut list) => {
+                list.sort_by(|a, b| b.amount.total_cmp(&a.amount));
+                bids.insert(id, list);
+            }
+            Err(e) => tracing::debug!("contract {id} bids: {e}"),
         }
     }
     let type_ids: Vec<i64> = raw_items.values().flatten().map(|i| i.type_id).collect();
@@ -279,8 +365,7 @@ async fn refresh_contracts(cx: &Cx) -> DomainResult {
         items.insert(id, list);
     }
 
-    let data = build(cx.id, raw, &names, &places, &items);
-    Ok(Box::new(move |c| c.contracts = Some(data)))
+    Ok(build(cx.id, raw, &names, &places, &items, &bids))
 }
 
 #[cfg(test)]
@@ -336,7 +421,7 @@ mod tests {
                 .collect(),
         )]
         .into();
-        let d = build(90000001, raw, &names, &places, &items);
+        let d = build(90000001, raw, &names, &places, &items, &HashMap::new());
         assert_eq!(d.slots_used, 2);
         assert_eq!(d.contracts.iter().map(|c| c.contract_id).collect::<Vec<_>>(), vec![2, 1, 3]);
         let courier = &d.contracts[0];
