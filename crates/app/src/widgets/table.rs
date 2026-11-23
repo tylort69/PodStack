@@ -27,6 +27,15 @@ struct Col<T> {
 
 type RowAction<T> = Rc<dyn Fn(&T)>;
 type RowTest<T> = Rc<dyn Fn(&T) -> bool>;
+type RowToggle<T> = Rc<dyn Fn(&T, bool)>;
+
+/// Rows arranged as a tree: the first column gets an expander.
+struct Tree<T> {
+    roots: Vec<usize>,
+    children: Rc<Vec<Vec<usize>>>,
+    is_open: Option<RowTest<T>>,
+    on_toggle: Option<RowToggle<T>>,
+}
 
 pub struct Table<T: 'static> {
     rows: Rc<Vec<T>>,
@@ -38,6 +47,7 @@ pub struct Table<T: 'static> {
     initial_sort: Option<(usize, bool)>,
     empty: Option<String>,
     pinned: Option<RowTest<T>>,
+    tree: Option<Tree<T>>,
 }
 
 fn cell_label(s: &str, numeric: bool) -> gtk::Widget {
@@ -56,7 +66,7 @@ fn cell_label(s: &str, numeric: bool) -> gtk::Widget {
 
 impl<T: 'static> Table<T> {
     pub fn new(rows: Vec<T>) -> Self {
-        Table { rows: Rc::new(rows), cols: vec![], on_activate: None, own_scroll: true, min_height: None, max_height: None, initial_sort: None, empty: None, pinned: None }
+        Table { rows: Rc::new(rows), cols: vec![], on_activate: None, own_scroll: true, min_height: None, max_height: None, initial_sort: None, empty: None, pinned: None, tree: None }
     }
 
     /// Text column, sorted alphabetically.
@@ -149,6 +159,23 @@ impl<T: 'static> Table<T> {
         self
     }
 
+    /// Shows the rows as a tree: `roots` and each row's `children` are indices into the rows. Sorting a column
+    /// sorts each level on its own.
+    pub fn tree(mut self, roots: Vec<usize>, children: Vec<Vec<usize>>) -> Self {
+        self.tree = Some(Tree { roots, children: Rc::new(children), is_open: None, on_toggle: None });
+        self
+    }
+
+    /// For a tree: which rows start expanded (wherever they appear, also after their parent is reopened), and a
+    /// call whenever the user expands or collapses one.
+    pub fn expansion(mut self, is_open: impl Fn(&T) -> bool + 'static, on_toggle: impl Fn(&T, bool) + 'static) -> Self {
+        if let Some(t) = &mut self.tree {
+            t.is_open = Some(Rc::new(is_open));
+            t.on_toggle = Some(Rc::new(on_toggle));
+        }
+        self
+    }
+
     /// Shown instead of an empty table.
     pub fn empty_text(mut self, t: &str) -> Self {
         self.empty = Some(t.into());
@@ -166,17 +193,18 @@ impl<T: 'static> Table<T> {
             }
         }
         let store = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
-        for i in 0..self.rows.len() {
-            store.append(&glib::BoxedAnyObject::new(i));
+        match &self.tree {
+            Some(t) => t.roots.iter().for_each(|&i| store.append(&glib::BoxedAnyObject::new(i))),
+            None => (0..self.rows.len()).for_each(|i| store.append(&glib::BoxedAnyObject::new(i))),
         }
         let cv = gtk::ColumnView::new(None::<gtk::SelectionModel>);
         cv.add_css_class("m3-table");
         cv.set_reorderable(false);
         cv.set_show_row_separators(false);
-        let idx = |o: &glib::Object| *o.downcast_ref::<glib::BoxedAnyObject>().unwrap().borrow::<usize>();
+        let is_tree = self.tree.is_some();
 
         let mut columns = vec![];
-        for col in &self.cols {
+        for (n, col) in self.cols.iter().enumerate() {
             let factory = gtk::SignalListItemFactory::new();
             let rows = self.rows.clone();
             let cell = col.cell.clone();
@@ -184,7 +212,17 @@ impl<T: 'static> Table<T> {
                 let item = item.downcast_ref::<gtk::ListItem>().unwrap();
                 if let Some(obj) = item.item() {
                     let w = cell(&rows[idx(&obj)]);
-                    item.set_child(Some(&w));
+                    match obj.downcast::<gtk::TreeListRow>() {
+                        // the first column of a tree indents by depth and carries the expander
+                        Ok(row) if is_tree && n == 0 => {
+                            let e = gtk::TreeExpander::new();
+                            e.set_indent_for_icon(true);
+                            e.set_list_row(Some(&row));
+                            e.set_child(Some(&w));
+                            item.set_child(Some(&e));
+                        }
+                        _ => item.set_child(Some(&w)),
+                    }
                 }
             });
             factory.connect_unbind(|_, item| {
@@ -230,7 +268,13 @@ impl<T: 'static> Table<T> {
                 cv.sort_by_column(Some(c), if desc { gtk::SortType::Descending } else { gtk::SortType::Ascending });
             }
         }
-        let sort_model = gtk::SortListModel::new(Some(store), cv.sorter());
+        let sort_model = match &self.tree {
+            None => gtk::SortListModel::new(Some(store), cv.sorter()),
+            Some(t) => {
+                let tree = tree_model(store, t, self.rows.clone());
+                gtk::SortListModel::new(Some(tree), Some(gtk::TreeListRowSorter::new(cv.sorter())))
+            }
+        };
         let selection = gtk::SingleSelection::new(Some(sort_model));
         selection.set_autoselect(false);
         selection.set_can_unselect(true);
@@ -246,6 +290,9 @@ impl<T: 'static> Table<T> {
 
         let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
         frame.add_css_class("table-frame");
+        if is_tree {
+            frame.add_css_class("tree");
+        }
         frame.set_overflow(gtk::Overflow::Hidden);
         if self.own_scroll {
             let sw = gtk::ScrolledWindow::new();
@@ -276,4 +323,63 @@ impl<T: 'static> Table<T> {
         }
         frame.upcast()
     }
+}
+
+/// The row index an item of the table's model stands for (a tree's items are rows wrapping it).
+fn idx(o: &glib::Object) -> usize {
+    match o.downcast_ref::<gtk::TreeListRow>() {
+        Some(row) => idx(&row.item().expect("tree row item")),
+        None => *o.downcast_ref::<glib::BoxedAnyObject>().unwrap().borrow::<usize>(),
+    }
+}
+
+/// The tree over `roots`, with the rows `is_open` names expanded, and expanding and collapsing reported.
+fn tree_model<T: 'static>(roots: gtk::gio::ListStore, t: &Tree<T>, rows: Rc<Vec<T>>) -> gtk::TreeListModel {
+    let children = t.children.clone();
+    let model = gtk::TreeListModel::new(roots, false, false, move |obj| {
+        let kids = children.get(idx(obj)).filter(|k| !k.is_empty())?;
+        let store = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        kids.iter().for_each(|&i| store.append(&glib::BoxedAnyObject::new(i)));
+        Some(store.upcast())
+    });
+    let Some(is_open) = t.is_open.clone() else { return model };
+    let open_new = {
+        let rows = rows.clone();
+        move |model: &gtk::TreeListModel, from: u32, to: u32| {
+            for pos in from..to {
+                if let Some(row) = model.row(pos) {
+                    if row.is_expandable() && !row.is_expanded() && is_open(&rows[idx(row.upcast_ref())]) {
+                        row.set_expanded(true);
+                    }
+                }
+            }
+        }
+    };
+    // Rows opened before: expanding one inserts its children right after it, so this loop reaches them too.
+    let mut pos = 0;
+    while pos < model.n_items() {
+        open_new(&model, pos, pos + 1);
+        pos += 1;
+    }
+    let on_toggle = t.on_toggle.clone();
+    model.connect_items_changed(move |model, pos, removed, added| {
+        // Expanding or collapsing a row inserts or removes its children right below it.
+        if let (Some(f), Some(row)) = (&on_toggle, pos.checked_sub(1).and_then(|p| model.row(p))) {
+            if (added > 0) == row.is_expanded() && (added > 0 || removed > 0) {
+                f(&rows[idx(row.upcast_ref())], row.is_expanded());
+            }
+        }
+        // Children shown again reopen the rows that were open; later, so the models behind this one have taken
+        // in this change first.
+        if added > 0 {
+            let weak = model.downgrade();
+            let open_new = open_new.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(model) = weak.upgrade() {
+                    open_new(&model, pos, (pos + added).min(model.n_items()));
+                }
+            });
+        }
+    });
+    model
 }

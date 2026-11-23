@@ -17,6 +17,8 @@ pub mod fitting;
 pub mod doctrines;
 // Doctrine ships owned and missing per character, and what the missing ones cost (`doctrine_inventory`)
 pub mod doctrine_inventory;
+// Assets with assembled ships holding their fittings and cargo, and values rolled up (`asset_tree`)
+pub mod asset_tree;
 
 // Mail bodies, contracts and wallet helpers
 pub mod comms;

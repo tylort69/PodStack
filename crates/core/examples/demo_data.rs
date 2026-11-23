@@ -191,6 +191,8 @@ fn ensure_path(doc: &mut DoctrineDoc, path: &str) -> String {
 
 /// Doctrine ships in hangars, for the Asset Search's doctrine view: some fitted as the doctrine says, some packaged,
 /// one fitted another way. Characters with nothing here (the new one) are left without assets, as if not loaded.
+/// Ships fitted as the doctrine also carry a secure container of minerals in their cargo (for the Assets tab's ships
+/// as containers view). Prices are made up from the type id, so values show without a market.
 fn add_assets(dir: &std::path::Path, doc: &DoctrineDoc, places: &[Place]) {
     use podstack_core::domains::assets::{Asset, AssetsData};
     // (character, ship, how: 'f' fitted as the doctrine, 'p' packaged, 'o' assembled but fitted otherwise, station index)
@@ -220,7 +222,7 @@ fn add_assets(dir: &std::path::Path, doc: &DoctrineDoc, places: &[Place]) {
             let place = &places[*at];
             data.locations.insert(place.id, place.clone());
             let hull = id();
-            let asset = |item_id, type_id, name: &str, quantity, flag: &str, parent: Option<i64>, singleton| Asset {
+            let asset = |item_id, type_id: i64, name: &str, quantity, flag: &str, parent: Option<i64>, singleton| Asset {
                 item_id,
                 type_id,
                 name: name.into(),
@@ -229,9 +231,24 @@ fn add_assets(dir: &std::path::Path, doc: &DoctrineDoc, places: &[Place]) {
                 parent_id: parent,
                 root_location_id: place.id,
                 is_singleton: singleton,
+                unit_price: Some(if parent.is_none() {
+                    (type_id % 97 + 20) as f64 * 1_000_000.0
+                } else if singleton {
+                    (type_id % 50 + 1) as f64 * 40_000.0
+                } else {
+                    // charges, drones and other stacks: cheap per unit
+                    (type_id % 50 + 1) as f64 * 400.0
+                }),
                 ..Default::default()
             };
             data.items.push(asset(hull, fit.ship_id, ship, 1, "Hangar", None, *how != 'p'));
+            if *how == 'f' {
+                let can = id();
+                data.items.push(asset(can, 3467, "Small Secure Container", 1, "Cargo", Some(hull), true));
+                let mut tritanium = asset(id(), 34, "Tritanium", 25_000, "Unlocked", Some(can), false);
+                tritanium.unit_price = Some(4.5);
+                data.items.push(tritanium);
+            }
             if *how == 'p' {
                 continue;
             }
