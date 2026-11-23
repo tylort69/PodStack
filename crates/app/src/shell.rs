@@ -37,6 +37,9 @@ pub fn build(app: &gtk::Application, core: Arc<Core>) -> gtk::ApplicationWindow 
         .icon_name(config::APP_ID)
         .build();
     window.set_size_request(760, 520);
+    if let Ok(t) = std::env::var("PODSTACK_DEBUG_WIDTHS") {
+        debug_widths(&window, t.parse().unwrap_or(600));
+    }
 
     let ctx = Ctx(Rc::new(CtxInner {
         core: core.clone(),
@@ -501,4 +504,29 @@ impl Shell {
         });
         btn
     }
+}
+
+/// For UI testing (`PODSTACK_DEBUG_WIDTHS=<px>`): a few seconds in, logs every widget whose minimum width is at
+/// least that many pixels, indented by depth, to find what keeps a page from fitting a narrow window.
+fn debug_widths(window: &gtk::ApplicationWindow, threshold: i32) {
+    fn walk(w: &gtk::Widget, depth: usize, threshold: i32) {
+        let (min, _, _, _) = w.measure(gtk::Orientation::Horizontal, -1);
+        if min < threshold {
+            return;
+        }
+        let classes = w.css_classes().iter().map(|c| c.to_string()).collect::<Vec<_>>().join(".");
+        let text = w.downcast_ref::<gtk::Label>().map(|l| format!(" {:?}", l.text().chars().take(40).collect::<String>())).unwrap_or_default();
+        eprintln!("WIDTH {}{} {} .{}{}", "  ".repeat(depth), min, w.type_().name(), classes, text);
+        let mut c = w.first_child();
+        while let Some(ch) = c {
+            walk(&ch, depth + 1, threshold);
+            c = ch.next_sibling();
+        }
+    }
+    let window = window.clone();
+    glib::timeout_add_seconds_local_once(6, move || {
+        if let Some(c) = window.child() {
+            walk(&c, 0, threshold);
+        }
+    });
 }

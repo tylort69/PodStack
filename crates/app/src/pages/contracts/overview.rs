@@ -176,8 +176,8 @@ fn scope_banners(body: &gtk::Box, chars: &[std::sync::Arc<podstack_core::Charact
     }
 }
 
-fn controls(ctx: &Ctx, options: &[(String, Scope)], scope: Scope, period: Period) -> gtk::Box {
-    let row = w::hbox(16);
+fn controls(ctx: &Ctx, options: &[(String, Scope)], scope: Scope, period: Period) -> gtk::Widget {
+    let row = super::common::wrap_row();
     let labels: Vec<&str> = Period::ALL.iter().map(|p| p.label()).collect();
     let selected = Period::ALL.iter().position(|p| *p == period).unwrap_or(1);
     let periods = {
@@ -202,7 +202,7 @@ fn controls(ctx: &Ctx, options: &[(String, Scope)], scope: Scope, period: Period
         });
     }
     row.append(&labelled("Whose", &dd));
-    row
+    row.upcast()
 }
 
 /// A stat tile whose value is green for a gain and red for a loss.

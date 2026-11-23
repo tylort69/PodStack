@@ -825,3 +825,15 @@ fn settings_dialog(ctx: &Ctx) {
     actions.append(&save);
     win.present();
 }
+
+/// A row of controls that wraps onto more lines in a narrow window instead of widening the page.
+pub fn wrap_row() -> gtk::FlowBox {
+    let f = gtk::FlowBox::new();
+    f.set_selection_mode(gtk::SelectionMode::None);
+    f.set_homogeneous(false);
+    f.set_column_spacing(16);
+    f.set_row_spacing(8);
+    f.set_max_children_per_line(12);
+    f.set_valign(gtk::Align::Start);
+    f
+}
