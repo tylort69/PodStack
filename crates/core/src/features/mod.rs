@@ -20,6 +20,9 @@ pub mod comms;
 pub mod contracts;
 // Couriers: active hauls, hauling history, rate cards and quotes, public courier finder (`courier`)
 pub mod courier;
+// Buyback programs, offers and verdicts (`buyback`); public contracts against the market (`deals`)
+pub mod buyback;
+pub mod deals;
 
 // Industry and planetary interaction helpers
 pub mod industry;
