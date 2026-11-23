@@ -43,7 +43,7 @@ const HIGHLIGHTS: &[(&str, &str, &str)] = &[
 ];
 
 const HERITAGE: &[&str] = &[
-    "Rewritten as a native Linux app in Rust with GTK 4 and Material You, built for Arch and Hyprland: colors from your wallpaper (matugen), desktop notifications and a tray icon.",
+    "Rewritten as a native app in Rust with GTK 4 and Material You, for Linux (built on Arch and Hyprland) and Windows: colors from your wallpaper or accent color, desktop notifications and a tray icon.",
     "ESI's new versioning: requests carry a compatibility date and tenant, so CCP's API changes don't silently break your data.",
     "A modern EVE SSO login with PKCE, and your own EVE application if you like, caught automatically on a loopback callback.",
     "Skill planning, fit planning, skillbook pricing, implant profiles, SP farming and queue health on top of the original's character overview.",
@@ -259,7 +259,7 @@ fn hero(ctx: &Ctx) -> gtk::Box {
     let col = w::vbox(6);
     col.set_hexpand(true);
     col.append(&w::text(config::APP_NAME, &["display-small"]));
-    col.append(&w::text(&format!("Version {} · native Linux edition", config::VERSION), &["title-medium", "dim"]));
+    col.append(&w::text(&format!("Version {} · native {} edition", config::VERSION, if cfg!(windows) { "Windows" } else { "Linux" }), &["title-medium", "dim"]));
     let tagline = w::text(
         "The capsuleer command suite for pilots who run more than one clone. PodStack plugs straight into the EVE \
          Swagger Interface for real-time awareness across your whole roster: skill queues, SP, ISK, contracts and \

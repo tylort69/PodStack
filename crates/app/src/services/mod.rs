@@ -6,4 +6,5 @@ pub mod tray;
 #[cfg(windows)]
 #[path = "tray_windows.rs"]
 pub mod tray;
+mod tray_menu;
 mod window_settings;

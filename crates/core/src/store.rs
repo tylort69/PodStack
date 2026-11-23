@@ -7,15 +7,22 @@
 //! - `<name>.json`          documents saved by features via [`load_doc`]/[`save_doc`] (skill plans, farms, …)
 //!
 //! `$XDG_CACHE_HOME/podstack` holds re-downloadable data: names, types, structures and images.
+//!
+//! On Windows the folders are `%APPDATA%\PodStack Native` and `%LOCALAPPDATA%\PodStack Native`: the original
+//! Electron PodStack keeps its files in `%APPDATA%\PodStack`, and Windows ignores case in folder names, so plain
+//! "podstack" would mix the two apps' files.
 
 use serde::{de::DeserializeOwned, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// The folder name under the platform's data and cache folders.
+const DIR_NAME: &str = if cfg!(windows) { "PodStack Native" } else { "podstack" };
+
 pub fn data_dir() -> PathBuf {
     let dir = std::env::var_os("PODSTACK_DATA_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("podstack"));
+        .unwrap_or_else(|| dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join(DIR_NAME));
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -23,7 +30,7 @@ pub fn data_dir() -> PathBuf {
 pub fn cache_dir() -> PathBuf {
     let dir = std::env::var_os("PODSTACK_CACHE_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| dirs::cache_dir().unwrap_or_else(|| PathBuf::from(".")).join("podstack"));
+        .unwrap_or_else(|| dirs::cache_dir().unwrap_or_else(|| PathBuf::from(".")).join(DIR_NAME));
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -66,6 +73,9 @@ pub fn write_bytes(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
+        // On Windows the user's profile folder is already closed to other users.
+        #[cfg(not(unix))]
+        let _ = private;
         let mut f = opts.open(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;

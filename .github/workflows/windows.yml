@@ -1,8 +1,13 @@
 name: Windows
 on:
   push:
-    branches: [windows-spike]
+    branches: [master, windows-spike]
+    tags: ["v*"]
+  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -40,7 +45,8 @@ jobs:
         run: packaging/windows/bundle.sh dist/PodStack
       - name: Demo data
         run: cargo run --release --locked -p podstack-core --example demo_data -- demo/data demo/cache
-      # Runs the bundle with a bare PATH, so a DLL the bundle forgot fails here instead of on someone's PC.
+      # Runs the bundle with a bare PATH, so a DLL the bundle forgot fails here instead of on someone's PC. PodStack
+      # logs to podstack.log in its cache folder on Windows.
       - name: Snapshots
         shell: pwsh
         run: |
@@ -49,19 +55,45 @@ jobs:
           $env:PODSTACK_DATA_DIR = "$pwd\demo\data"
           $env:PODSTACK_CACHE_DIR = "$pwd\demo\cache"
           $env:PODSTACK_LOG = "podstack=debug,podstack_core=info"
+          $exe = "dist\PodStack\bin\podstack.exe"
           New-Item -ItemType Directory -Force shots | Out-Null
           $failed = 0
           foreach ($route in "Overview", "Doctrines", "Contracts", "Settings") {
             $env:PODSTACK_START_ROUTE = $route
             $env:PODSTACK_SNAPSHOT = "$pwd\shots\$route.png"
-            $p = Start-Process -FilePath "dist\PodStack\bin\podstack.exe" -PassThru -NoNewWindow `
-              -RedirectStandardOutput "shots\$route.log" -RedirectStandardError "shots\$route.err.log"
+            $p = Start-Process -FilePath $exe -PassThru
             if (-not $p.WaitForExit(120000)) { $p.Kill(); Write-Host "$route timed out" }
+            Copy-Item demo\cache\podstack.log "shots\$route.log" -ErrorAction SilentlyContinue
             Write-Host "== $route (exit $($p.ExitCode))"
-            Get-Content "shots\$route.log", "shots\$route.err.log" -ErrorAction SilentlyContinue | Select-Object -Last 15
+            Get-Content "shots\$route.log" -ErrorAction SilentlyContinue | Select-Object -Last 12
             if (-not (Test-Path "shots\$route.png")) { $failed++ }
           }
+
+          # A second launch must hand over to the running copy and exit.
+          $env:PODSTACK_START_ROUTE = "Overview"
+          $env:PODSTACK_SNAPSHOT = "$pwd\shots\single-instance.png"
+          $env:PODSTACK_SNAPSHOT_DELAY = "20"
+          $first = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 6
+          Remove-Item Env:PODSTACK_SNAPSHOT
+          $second = Start-Process -FilePath $exe -PassThru
+          if ($second.WaitForExit(15000)) { Write-Host "== second launch exited (code $($second.ExitCode))" }
+          else { $second.Kill(); Write-Host "== second launch kept running"; $failed++ }
+          if (-not $first.WaitForExit(60000)) { $first.Kill() }
           if ($failed) { exit 1 }
+      - name: Installer
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          "PODSTACK_VERSION=$version" >> $env:GITHUB_ENV
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y | Out-Null }
+            $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6"
+          }
+          iscc /Q "/DAppVersion=$version" packaging\windows\podstack.iss
+          Compress-Archive -Path dist\PodStack -DestinationPath "dist\PodStack-Native-$version-portable.zip"
+          Get-ChildItem dist -File | Format-Table Name, Length
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -69,5 +101,22 @@ jobs:
           path: shots
       - uses: actions/upload-artifact@v4
         with:
-          name: PodStack-windows
-          path: dist
+          name: PodStack-Native-windows
+          path: |
+            dist/PodStack-Native-Setup-*.exe
+            dist/PodStack-Native-*-portable.zip
+      # A version tag adds the installer and the portable zip to that tag's release, once the release exists.
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          for ($i = 0; $i -lt 60; $i++) {
+            gh release view $tag --repo ${{ github.repository }} *> $null
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 30
+          }
+          gh release upload $tag --repo ${{ github.repository }} --clobber `
+            "dist\PodStack-Native-Setup-$env:PODSTACK_VERSION.exe" "dist\PodStack-Native-$env:PODSTACK_VERSION-portable.zip"

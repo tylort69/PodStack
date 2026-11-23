@@ -118,8 +118,16 @@ pub fn cached_matugen() -> Option<serde_json::Value> {
     store::read_json(&matugen_cache_path())
 }
 
+/// The desktop's accent color as "#rrggbb", where PodStack can read one (Windows).
+pub fn desktop_accent() -> Option<String> {
+    podstack_core::platform::accent_color().map(|c| format!("#{c:06x}"))
+}
+
 /// Whether the desktop prefers dark (for [`ThemeMode::System`]).
 pub fn system_prefers_dark() -> bool {
+    if let Some(dark) = podstack_core::platform::prefers_dark() {
+        return dark;
+    }
     if let Ok(out) = Command::new("gsettings").args(["get", "org.gnome.desktop.interface", "color-scheme"]).output() {
         let s = String::from_utf8_lossy(&out.stdout);
         if s.contains("prefer-light") || s.contains("default") {
@@ -145,6 +153,9 @@ pub fn resolve_fast(t: &ThemeSettings) -> Scheme {
     let dark = is_dark(t.mode);
     let faction = |name: &str| Scheme::from_seed(presets::find(name).seed, dark, &t.variant, t.contrast);
     match &t.source {
+        ThemeSource::Auto if desktop_accent().is_some() => {
+            Scheme::from_seed(&desktop_accent().unwrap_or_default(), dark, &t.variant, t.contrast)
+        }
         ThemeSource::Auto | ThemeSource::Matugen { image: None } if template_colors().is_some() => {
             template_colors().and_then(|j| Scheme::from_matugen(&j, dark)).unwrap_or_else(|| faction(presets::DEFAULT_FACTION))
         }
@@ -161,6 +172,7 @@ pub fn resolve_fast(t: &ThemeSettings) -> Scheme {
 pub fn resolve_full(t: &ThemeSettings) -> Result<Scheme, String> {
     let dark = is_dark(t.mode);
     match &t.source {
+        ThemeSource::Auto if desktop_accent().is_some() => Ok(resolve_fast(t)),
         ThemeSource::Auto | ThemeSource::Matugen { image: None } if template_colors().is_some() => Ok(resolve_fast(t)),
         ThemeSource::Auto | ThemeSource::Matugen { image: None } if matugen_available() => {
             let wp = current_wallpaper().ok_or("No wallpaper found (hyprpaper or swww).")?;

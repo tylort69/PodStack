@@ -17,13 +17,16 @@ type Refreshers = Rc<RefCell<Vec<Box<dyn Fn(&ThemeSettings)>>>>;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
+    /// The desktop's accent color (Windows).
+    Accent,
     Wallpaper,
     Faction,
     Custom,
 }
 
-fn kind_of(source: &ThemeSource, matugen: bool) -> Kind {
+fn kind_of(source: &ThemeSource, matugen: bool, accent: bool) -> Kind {
     match source {
+        ThemeSource::Auto if accent => Kind::Accent,
         ThemeSource::Auto | ThemeSource::Matugen { .. } if matugen => Kind::Wallpaper,
         ThemeSource::Auto | ThemeSource::Matugen { .. } | ThemeSource::Faction { .. } => Kind::Faction,
         ThemeSource::Custom { .. } => Kind::Custom,
@@ -38,6 +41,7 @@ fn set_theme(ctx: &Ctx, f: impl FnOnce(&mut ThemeSettings)) {
 fn selected_faction(t: &ThemeSettings) -> Option<&'static str> {
     match &t.source {
         ThemeSource::Faction { name } => Some(presets::find(name).name),
+        ThemeSource::Auto if theme::desktop_accent().is_some() => None,
         ThemeSource::Auto | ThemeSource::Matugen { .. } if !theme::matugen_available() => Some(presets::DEFAULT_FACTION),
         _ => None,
     }
@@ -158,6 +162,34 @@ fn pick_image(ctx: &Ctx) {
             }
         }
     });
+}
+
+/// Windows accent: nothing to choose, so a swatch and where to change it.
+fn accent_pane(color: &str) -> gtk::Box {
+    let pane = w::hbox(12);
+    pane.set_margin_start(24);
+    pane.set_margin_end(24);
+    let swatch = gtk::DrawingArea::new();
+    swatch.set_content_width(28);
+    swatch.set_content_height(28);
+    swatch.set_valign(gtk::Align::Center);
+    if let Some(rgba) = parse_rgba(color) {
+        swatch.set_draw_func(move |_, cr, w, h| {
+            let r = f64::from(w.min(h)) / 2.0;
+            cr.arc(f64::from(w) / 2.0, f64::from(h) / 2.0, r, 0.0, std::f64::consts::TAU);
+            cr.set_source_rgba(rgba.red().into(), rgba.green().into(), rgba.blue().into(), 1.0);
+            let _ = cr.fill();
+        });
+    }
+    pane.append(&swatch);
+    let text = w::text(
+        "PodStack follows your Windows accent color. Change it in Windows Settings → Personalization → Colors; PodStack picks it up the next time it starts.",
+        &["body-medium"],
+    );
+    text.set_wrap(true);
+    text.set_hexpand(true);
+    pane.append(&text);
+    pane
 }
 
 fn wallpaper_pane(ctx: &Ctx, refresh: Refreshers) -> gtk::Box {
@@ -309,6 +341,7 @@ pub(super) fn card(ctx: &Ctx) -> gtk::Box {
     let core = ctx.core().clone();
     let t = core.settings().theme;
     let matugen = theme::matugen_available();
+    let accent = theme::desktop_accent();
     let card = settings_card(
         "palette",
         "Appearance",
@@ -318,11 +351,13 @@ pub(super) fn card(ctx: &Ctx) -> gtk::Box {
     let refresh: Refreshers = Rc::new(RefCell::new(vec![]));
 
     // source
-    let kinds: Vec<(Kind, &str)> = if matugen {
-        vec![(Kind::Wallpaper, "Wallpaper (matugen)"), (Kind::Faction, "EVE faction"), (Kind::Custom, "Custom")]
-    } else {
-        vec![(Kind::Faction, "EVE faction"), (Kind::Custom, "Custom")]
-    };
+    let mut kinds: Vec<(Kind, &str)> = vec![(Kind::Faction, "EVE faction"), (Kind::Custom, "Custom")];
+    if matugen {
+        kinds.insert(0, (Kind::Wallpaper, "Wallpaper (matugen)"));
+    }
+    if accent.is_some() {
+        kinds.insert(0, (Kind::Accent, "Windows accent"));
+    }
     let stack = gtk::Stack::new();
     stack.set_transition_type(gtk::StackTransitionType::Crossfade);
     stack.set_vhomogeneous(false);
@@ -331,9 +366,12 @@ pub(super) fn card(ctx: &Ctx) -> gtk::Box {
     if matugen {
         stack.add_named(&wallpaper_pane(ctx, refresh.clone()), Some("wallpaper"));
     }
+    if let Some(color) = &accent {
+        stack.add_named(&accent_pane(color), Some("accent"));
+    }
     let faction = w::vbox(8);
     faction.append(&faction_grid(ctx, refresh.clone()));
-    if !matugen {
+    if !matugen && cfg!(target_os = "linux") {
         let hint = w::text("Install matugen (pacman -S matugen) to color PodStack from your wallpaper.", &["body-small", "dim"]);
         hint.set_margin_start(24);
         hint.set_margin_top(4);
@@ -342,11 +380,13 @@ pub(super) fn card(ctx: &Ctx) -> gtk::Box {
     stack.add_named(&faction, Some("faction"));
     stack.add_named(&custom_pane(ctx), Some("custom"));
     let page_of = |k: Kind| match k {
+        Kind::Accent => "accent",
         Kind::Wallpaper => "wallpaper",
         Kind::Faction => "faction",
         Kind::Custom => "custom",
     };
-    let current = kind_of(&t.source, matugen);
+    let has_accent = accent.is_some();
+    let current = kind_of(&t.source, matugen, has_accent);
     stack.set_visible_child_name(page_of(current));
 
     let labels: Vec<&str> = kinds.iter().map(|k| k.1).collect();
@@ -358,11 +398,12 @@ pub(super) fn card(ctx: &Ctx) -> gtk::Box {
             let k = kinds[i];
             stack.set_visible_child_name(page_of(k));
             let now = ctx.core().settings().theme;
-            if kind_of(&now.source, matugen) == k {
+            if kind_of(&now.source, matugen, has_accent) == k {
                 return;
             }
             // switching the source applies its current choice right away
             let source = match k {
+                Kind::Accent => ThemeSource::Auto,
                 Kind::Wallpaper => ThemeSource::Matugen { image: None },
                 Kind::Faction => ThemeSource::Faction { name: presets::DEFAULT_FACTION.into() },
                 Kind::Custom => ThemeSource::Custom { seed: theme::current().get("primary").to_string() },

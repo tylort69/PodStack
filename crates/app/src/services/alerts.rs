@@ -96,12 +96,22 @@ pub fn notify(title: &str, body: &str, character: Option<i64>) {
         if let Some(icon) = icon_path() {
             n.icon(&icon);
         }
-        // Windows toasts give no handle to wait on for a click, so there they only inform.
+        // A Windows toast is clicked as a whole (no "default" action to add); it shows under PodStack's name and icon
+        // because the installer's Start menu shortcut carries the same app id.
         #[cfg(windows)]
         {
-            let _ = character;
-            if let Err(e) = n.show() {
-                tracing::warn!("alerts: couldn't show notification: {e}");
+            n.app_id(config::APP_ID);
+            match n.show() {
+                Ok(handle) => {
+                    let _ = handle.wait_for_response(|r: &notify_rust::NotificationResponse| {
+                        if r.is_default_action() {
+                            if let Some(tx) = CLICKS.get() {
+                                let _ = tx.unbounded_send(character);
+                            }
+                        }
+                    });
+                }
+                Err(e) => tracing::warn!("alerts: couldn't show notification: {e}"),
             }
         }
         #[cfg(unix)]

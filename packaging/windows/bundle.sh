@@ -27,5 +27,10 @@ copy_dlls "$out/bin/podstack.exe" "$out"/lib/gdk-pixbuf-2.0/2.10.0/loaders/*.dll
 
 cp "$prefix/share/glib-2.0/schemas/gschemas.compiled" "$out/share/glib-2.0/schemas/"
 cp -r "$prefix/share/icons/hicolor" "$prefix/share/icons/Adwaita" "$out/share/icons/"
+# The window icon, found by the app id like on Linux.
+install -Dm644 assets/icon.png "$out/share/icons/hicolor/512x512/apps/io.github.tylort69.PodStack.png"
+# GTK trusts the theme's icon cache, which doesn't know the icon just added.
+gtk4-update-icon-cache -q -t -f "$out/share/icons/hicolor"
+cp LICENSE.md "$out/"
 
 echo "bundled $(ls "$out/bin" | wc -l) files in bin, $(du -sh "$out" | cut -f1) in all"

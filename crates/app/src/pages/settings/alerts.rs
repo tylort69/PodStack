@@ -61,7 +61,11 @@ fn channels_card(ctx: &Ctx, s: &AlertSettings, set_column: Rc<dyn Fn(Channel, bo
         let (ctx, set_column) = (ctx.clone(), set_column.clone());
         let row = w::switch_row(
             "Desktop notifications",
-            Some("Through your notification daemon (mako, dunst, swaync, …). Clicking one shows PodStack."),
+            Some(if cfg!(windows) {
+                "Windows notifications. Clicking one shows PodStack."
+            } else {
+                "Through your notification daemon (mako, dunst, swaync, …). Clicking one shows PodStack."
+            }),
             s.enabled,
             move |on| {
                 update(&ctx, |s| s.enabled = on);

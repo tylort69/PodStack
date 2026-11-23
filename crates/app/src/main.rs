@@ -1,4 +1,7 @@
-//! PodStack: an EVE Online character manager for Linux, built with GTK4 and Material You.
+//! PodStack: an EVE Online character manager for Linux and Windows, built with GTK4 and Material You.
+
+// No console window behind the app on Windows; logs go to a file there instead (see `init_logging`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod ctx;
 mod fonts;
@@ -12,12 +15,23 @@ mod theme;
 mod widgets;
 
 use gtk::{gio, glib, prelude::*};
-use podstack_core::{config, Core, Event};
+use podstack_core::{config, platform, Core, Event};
 
 fn main() -> glib::ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("PODSTACK_LOG").unwrap_or_else(|_| "podstack=info,podstack_core=info".into()))
-        .init();
+    init_logging();
+
+    // A restart (after restoring a backup) waits for the old copy to finish exiting before it claims anything.
+    if let Some(pid) = std::env::var("PODSTACK_WAIT_PID").ok().and_then(|p| p.parse().ok()) {
+        platform::wait_for_exit(pid);
+    }
+    platform::set_app_id(config::APP_ID);
+    let raised = match platform::claim_instance(config::APP_ID) {
+        platform::Instance::First { raised } => raised,
+        platform::Instance::AlreadyRunning => {
+            tracing::info!("PodStack is already running; asked it to show its window");
+            return glib::ExitCode::SUCCESS;
+        }
+    };
 
     let core = Core::load();
     {
@@ -48,6 +62,17 @@ fn main() -> glib::ExitCode {
         });
     });
 
+    // Another launch asked this copy to show itself (Windows; on Linux GTK sends `activate` instead).
+    if let Some(raised) = raised {
+        let app = app.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+            if raised.try_recv().is_ok() {
+                app.activate();
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
     let core_a = core.clone();
     app.connect_activate(move |app| {
         // a second launch just raises the window
@@ -66,6 +91,17 @@ fn main() -> glib::ExitCode {
     let code = app.run();
     core.flush();
     code
+}
+
+fn init_logging() {
+    let filter = tracing_subscriber::EnvFilter::try_from_env("PODSTACK_LOG").unwrap_or_else(|_| "podstack=info,podstack_core=info".into());
+    // A Windows app without a console has nowhere to print, so it writes podstack.log in the cache folder.
+    #[cfg(windows)]
+    if let Ok(file) = std::fs::File::create(podstack_core::store::cache_dir().join("podstack.log")) {
+        tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false).with_writer(std::sync::Mutex::new(file)).init();
+        return;
+    }
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
 /// `PODSTACK_SNAPSHOT=<file.png>`: saves the window as an image once it has settled, then quits. CI uses it to check

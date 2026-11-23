@@ -7,17 +7,16 @@
 use crate::rt;
 use futures::StreamExt;
 use gtk::{gdk_pixbuf, glib, prelude::*};
-use podstack_core::{config, fmt, Core, Event};
+use podstack_core::{config, Core, Event};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 pub use super::window_settings::{WindowSettings, SETTINGS_KEY};
+use super::tray_menu::{entries, Entry};
 
 /// Whether a tray host (e.g. waybar) took the icon.
 static RUNNING: AtomicBool = AtomicBool::new(false);
-
-const LEVELS: [&str; 6] = ["", "I", "II", "III", "IV", "V"];
 
 #[derive(Clone, Debug)]
 enum Msg {
@@ -25,13 +24,6 @@ enum Msg {
     Show,
     Open(i64),
     Quit,
-}
-
-#[derive(Clone, Default)]
-struct Entry {
-    id: i64,
-    short: String,
-    label: String,
 }
 
 struct Tray {
@@ -114,35 +106,6 @@ struct State {
     core: Arc<Core>,
     handle: Option<ksni::Handle<Tray>>,
     starting: bool,
-}
-
-fn short(d: chrono::Duration) -> String {
-    fmt::duration(d, 2)
-}
-
-fn entries(core: &Core) -> Vec<Entry> {
-    let now = chrono::Utc::now();
-    let mut chars: Vec<_> = core.characters().into_iter().filter(|c| c.has_basic_info()).collect();
-    chars.sort_by_key(|c| std::cmp::Reverse(c.total_sp()));
-    chars
-        .iter()
-        .map(|c| {
-            let name = c.name();
-            match (c.current_skill(), c.queue_end()) {
-                (Some(cur), Some(end)) => {
-                    let skill = if cur.skill_name.is_empty() { "Training".to_string() } else { cur.skill_name.clone() };
-                    let level = LEVELS.get(cur.finished_level as usize).copied().unwrap_or("");
-                    let skill_left = cur.finish_date.map(|f| short(f - now)).unwrap_or_default();
-                    Entry {
-                        id: c.id,
-                        short: format!("{name}: {}", short(end - now)),
-                        label: format!("{name} — {skill} {level} · {skill_left} (queue {})", short(end - now)),
-                    }
-                }
-                _ => Entry { id: c.id, short: format!("{name}: idle"), label: format!("{name} — not training") },
-            }
-        })
-        .collect()
 }
 
 /// The app icon as ARGB32 for the StatusNotifierItem.

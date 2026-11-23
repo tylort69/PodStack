@@ -298,23 +298,20 @@ fn confirm_view(ctx: &Ctx, win: &gtk::Window, body: &gtk::Box, actions: &gtk::Bo
     });
 }
 
-/// Starts PodStack again once this process has exited (GTK lets only one instance run), then exits right away so
+/// Starts PodStack again, which waits for this process to exit (`PODSTACK_WAIT_PID`), then exits right away so
 /// nothing in memory is saved over the restored files.
 fn relaunch() {
-    let exe = std::env::current_exe().ok();
-    if let Some(exe) = exe {
-        let script = "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; shift; exec \"$@\"";
-        let r = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(script)
-            .arg("podstack-relaunch")
-            .arg(std::process::id().to_string())
-            .arg(exe)
-            .args(std::env::args_os().skip(1))
-            .spawn();
-        if let Err(e) = r {
-            tracing::error!("couldn't restart PodStack: {e}");
+    match std::env::current_exe() {
+        Ok(exe) => {
+            let r = std::process::Command::new(exe)
+                .args(std::env::args_os().skip(1))
+                .env("PODSTACK_WAIT_PID", std::process::id().to_string())
+                .spawn();
+            if let Err(e) = r {
+                tracing::error!("couldn't restart PodStack: {e}");
+            }
         }
+        Err(e) => tracing::error!("couldn't restart PodStack: {e}"),
     }
     glib::idle_add_once(|| std::process::exit(0));
 }

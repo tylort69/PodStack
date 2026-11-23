@@ -42,3 +42,5 @@ pub mod backup;
 pub mod manufacturing;
 pub mod planetary;
 pub mod trade;
+// new PodStack releases on GitHub
+pub mod updates;

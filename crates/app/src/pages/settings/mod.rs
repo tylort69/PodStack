@@ -67,7 +67,7 @@ pub fn build(ctx: &Ctx) -> Page {
         1 => alerts::cards(ctx),
         2 => vec![login_card(ctx).upcast()],
         3 => vec![backup::card(ctx).upcast(), data_card(ctx).upcast()],
-        _ => vec![appearance::card(ctx).upcast(), window_card(ctx).upcast()],
+        _ => vec![appearance::card(ctx).upcast(), window_card(ctx).upcast(), updates_card(ctx).upcast()],
     };
     for c in cards {
         body.append(&c);
@@ -275,6 +275,7 @@ fn window_card(ctx: &Ctx) -> gtk::Box {
             let on = core.setting::<WindowSettings>(tray::SETTINGS_KEY).tray_icon;
             let (text, class) = match (on, tray::is_running()) {
                 (true, true) => ("The tray icon is showing.", "success-text"),
+                (true, false) if cfg!(windows) => ("The tray icon couldn't start: closing quits PodStack.", "warning-text"),
                 (true, false) => ("No tray found: closing quits PodStack. Waybar needs its \"tray\" module.", "warning-text"),
                 (false, _) => ("The tray icon is off.", "dim"),
             };
@@ -319,6 +320,20 @@ fn window_card(ctx: &Ctx) -> gtk::Box {
         ));
     }
     card.append(&dependent);
+    card
+}
+
+fn updates_card(ctx: &Ctx) -> gtk::Box {
+    use podstack_core::features::updates::{UpdateSettings, SETTINGS_KEY};
+    let card = settings_card("system_update", "Updates", Some(&format!("You have PodStack {}.", config::VERSION)), &[]);
+    let core = ctx.core().clone();
+    let s: UpdateSettings = core.setting(SETTINGS_KEY);
+    card.append(&w::switch_row(
+        "Check for new versions",
+        Some("Asks GitHub for the latest release when PodStack starts, and shows a button in the top bar when there's a newer one."),
+        s.check,
+        move |on| core.set_setting(SETTINGS_KEY, &UpdateSettings { check: on }),
+    ));
     card
 }
 

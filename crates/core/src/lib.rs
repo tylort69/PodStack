@@ -14,6 +14,7 @@ pub mod features;
 pub mod fmt;
 pub mod market;
 pub mod pi;
+pub mod platform;
 pub mod public_contracts;
 pub mod sde;
 pub mod sso;

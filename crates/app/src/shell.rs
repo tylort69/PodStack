@@ -87,6 +87,7 @@ pub fn build(app: &gtk::Application, core: Arc<Core>) -> gtk::ApplicationWindow 
     bar.append(&back);
     bar.append(&title);
     bar.append(&actions);
+    bar.append(&update_button(&ctx, &core));
     bar.append(&clock);
     let tick = move || clock.set_text(&format!("EVE {}", chrono::Utc::now().format("%H:%M")));
     tick();
@@ -527,4 +528,27 @@ fn debug_widths(window: &gtk::ApplicationWindow, threshold: i32) {
             walk(&c, 0, threshold);
         }
     });
+}
+
+/// A button in the top bar that appears when GitHub has a newer PodStack release, linking its page (Settings →
+/// General can turn the check off).
+fn update_button(ctx: &Ctx, core: &Arc<Core>) -> gtk::Box {
+    use podstack_core::features::updates;
+    let slot = w::hbox(0);
+    if !core.setting::<updates::UpdateSettings>(updates::SETTINGS_KEY).check {
+        return slot;
+    }
+    let (s, ctx) = (slot.clone(), ctx.clone());
+    crate::rt::run(updates::check(), move |result| match result {
+        Ok(Some(release)) => {
+            tracing::info!("PodStack {} is available", release.version);
+            let button = w::button_icon("system_update", &format!("PodStack {}", release.version), Btn::Tonal);
+            button.set_tooltip_text(Some("A new version is out: open its release page"));
+            button.connect_clicked(move |_| w::open_url(&ctx, &release.url));
+            s.append(&button);
+        }
+        Ok(None) => {}
+        Err(e) => tracing::info!("couldn't check for a new version: {e}"),
+    });
+    slot
 }
