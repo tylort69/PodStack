@@ -1,0 +1,73 @@
+name: Windows
+on:
+  push:
+    branches: [windows-spike]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-rust
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-nasm
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-adwaita-icon-theme
+      - uses: actions/cache@v4
+        with:
+          path: target
+          key: windows-target-${{ hashFiles('Cargo.lock') }}
+          restore-keys: windows-target-
+      - name: Toolchain
+        run: rustc -vV && pkg-config --modversion gtk4 pango
+      - name: Build
+        run: cargo build --release --locked -p podstack
+      - name: Test
+        run: cargo test --release --locked --workspace
+      - name: Bundle
+        run: packaging/windows/bundle.sh dist/PodStack
+      - name: Demo data
+        run: cargo run --release --locked -p podstack-core --example demo_data -- demo/data demo/cache
+      # Runs the bundle with a bare PATH, so a DLL the bundle forgot fails here instead of on someone's PC.
+      - name: Snapshots
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:SystemRoot\system32;$env:SystemRoot"
+          $env:PODSTACK_OFFLINE = "1"
+          $env:PODSTACK_DATA_DIR = "$pwd\demo\data"
+          $env:PODSTACK_CACHE_DIR = "$pwd\demo\cache"
+          $env:PODSTACK_LOG = "podstack=debug,podstack_core=info"
+          New-Item -ItemType Directory -Force shots | Out-Null
+          $failed = 0
+          foreach ($route in "Overview", "Doctrines", "Contracts", "Settings") {
+            $env:PODSTACK_START_ROUTE = $route
+            $env:PODSTACK_SNAPSHOT = "$pwd\shots\$route.png"
+            $p = Start-Process -FilePath "dist\PodStack\bin\podstack.exe" -PassThru -NoNewWindow `
+              -RedirectStandardOutput "shots\$route.log" -RedirectStandardError "shots\$route.err.log"
+            if (-not $p.WaitForExit(120000)) { $p.Kill(); Write-Host "$route timed out" }
+            Write-Host "== $route (exit $($p.ExitCode))"
+            Get-Content "shots\$route.log", "shots\$route.err.log" -ErrorAction SilentlyContinue | Select-Object -Last 15
+            if (-not (Test-Path "shots\$route.png")) { $failed++ }
+          }
+          if ($failed) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snapshots
+          path: shots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PodStack-windows
+          path: dist

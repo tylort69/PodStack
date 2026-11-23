@@ -8,29 +8,11 @@ use crate::rt;
 use futures::StreamExt;
 use gtk::{gdk_pixbuf, glib, prelude::*};
 use podstack_core::{config, fmt, Core, Event};
-use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// Settings key (`core.setting::<WindowSettings>(SETTINGS_KEY)`).
-pub const SETTINGS_KEY: &str = "window";
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct WindowSettings {
-    pub tray_icon: bool,
-    /// Closing the window hides it to the tray (when the tray icon is showing).
-    pub close_to_tray: bool,
-    /// Start with only the tray icon.
-    pub start_hidden: bool,
-}
-
-impl Default for WindowSettings {
-    fn default() -> Self {
-        WindowSettings { tray_icon: true, close_to_tray: false, start_hidden: false }
-    }
-}
+pub use super::window_settings::{WindowSettings, SETTINGS_KEY};
 
 /// Whether a tray host (e.g. waybar) took the icon.
 static RUNNING: AtomicBool = AtomicBool::new(false);

@@ -92,11 +92,20 @@ pub fn notify(title: &str, body: &str, character: Option<i64>) {
     let (title, body) = (title.to_string(), body.to_string());
     std::thread::spawn(move || {
         let mut n = notify_rust::Notification::new();
-        n.appname(config::APP_NAME).summary(&title).body(&body).action("default", "Open");
+        n.appname(config::APP_NAME).summary(&title).body(&body);
         if let Some(icon) = icon_path() {
             n.icon(&icon);
         }
-        match n.show() {
+        // Windows toasts give no handle to wait on for a click, so there they only inform.
+        #[cfg(windows)]
+        {
+            let _ = character;
+            if let Err(e) = n.show() {
+                tracing::warn!("alerts: couldn't show notification: {e}");
+            }
+        }
+        #[cfg(unix)]
+        match n.action("default", "Open").show() {
             Ok(handle) => handle.wait_for_action(|action| {
                 if action == "default" {
                     if let Some(tx) = CLICKS.get() {

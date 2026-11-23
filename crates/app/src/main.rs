@@ -58,9 +58,38 @@ fn main() -> glib::ExitCode {
         }
         let win = shell::build(app, core_a.clone());
         win.present();
+        if let Some(path) = std::env::var_os("PODSTACK_SNAPSHOT") {
+            snapshot_and_quit(app, &win, path.into());
+        }
     });
 
     let code = app.run();
     core.flush();
     code
+}
+
+/// `PODSTACK_SNAPSHOT=<file.png>`: saves the window as an image once it has settled, then quits. CI uses it to check
+/// that a build renders (fonts, icons, theme) on machines nobody can look at, without a desktop screenshot tool.
+fn snapshot_and_quit(app: &gtk::Application, win: &gtk::ApplicationWindow, path: std::path::PathBuf) {
+    let delay = std::env::var("PODSTACK_SNAPSHOT_DELAY").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
+    let (app, win) = (app.clone(), win.clone());
+    glib::timeout_add_seconds_local_once(delay, move || {
+        // The window's content, not the window: a toplevel's own paintable draws nothing. A widget paintable only
+        // holds an image after the widget's next frame, so ask for one and save it a moment later.
+        let target: gtk::Widget = win.child().unwrap_or_else(|| win.clone().upcast());
+        let paintable = gtk::WidgetPaintable::new(Some(&target));
+        target.queue_draw();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+            let snapshot = gtk::Snapshot::new();
+            paintable.snapshot(&snapshot, f64::from(target.width()), f64::from(target.height()));
+            match (snapshot.to_node(), win.renderer()) {
+                (Some(node), Some(renderer)) => match renderer.render_texture(node, None).save_to_png(&path) {
+                    Ok(()) => tracing::info!("snapshot saved to {}", path.display()),
+                    Err(e) => tracing::error!("couldn't save the snapshot: {e}"),
+                },
+                _ => tracing::error!("nothing to snapshot: the window hasn't rendered"),
+            }
+            app.quit();
+        });
+    });
 }
