@@ -48,6 +48,7 @@ pub fn build(ctx: &Ctx) -> Page {
         &["body-small", "dim"],
     );
     note.set_wrap(true);
+    note.set_ellipsize(gtk::pango::EllipsizeMode::None);
     note.set_xalign(0.0);
     note.set_hexpand(true);
     bar.append(&note);

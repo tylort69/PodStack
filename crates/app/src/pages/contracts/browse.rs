@@ -445,6 +445,7 @@ fn table(ctx: &Ctx, rows: Vec<Rc<Row>>, party: Option<Party>, at_sell: bool, emp
         )
         .expand()
         .text("Mine", |r| r.mine.clone())
+        .width(200)
         .text("What", |r| r.what())
         .text("From", |r| comms::contract_from(r.contract()).to_string())
         .text("To", |r| comms::contract_to(r.contract()).to_string())

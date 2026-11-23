@@ -39,6 +39,7 @@ pub(super) fn view(ctx: &Ctx) -> gtk::Box {
     bar.append(&go);
     bar.append(&clear);
     let with = w::line("Program", &["body-medium", "dim"]);
+    with.set_ellipsize(gtk::pango::EllipsizeMode::None);
     with.set_margin_start(8);
     bar.append(&with);
     let terms = w::line(&program.borrow().summary(), &["body-small", "dim"]);

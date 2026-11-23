@@ -313,7 +313,7 @@ fn waiting_card(ctx: &Ctx, chars: &[std::sync::Arc<podstack_core::Character>], m
         let i = w::icon(icon);
         list.append(&w::list_row(Some(i.upcast_ref()), &headline, Some(&supporting), Some(trailing.upcast_ref())));
     }
-    Some(w::card_with("Waiting on you", Some("Accept these in game"), &[], &list))
+    Some(w::card_with("Waiting on you", Some("Contracts assigned to you to accept, and couriers to deliver"), &[], &list))
 }
 
 fn chart_subtitle(period: Period) -> String {
@@ -332,7 +332,10 @@ fn legend() -> gtk::Widget {
         dot.add_css_class(class);
         dot.set_valign(gtk::Align::Center);
         b.append(&dot);
-        b.append(&w::line(label, &["body-small", "dim"]));
+        let l = w::line(label, &["body-small", "dim"]);
+        // short words: never cut them off for the card's title
+        l.set_ellipsize(gtk::pango::EllipsizeMode::None);
+        b.append(&l);
     }
     b.upcast()
 }

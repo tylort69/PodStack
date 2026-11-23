@@ -69,8 +69,11 @@ fn items_path() -> std::path::PathBuf {
     store::cache_dir().join("public_contract_items.json")
 }
 
+/// A region's listing and when it was fetched.
+type Listing = (Instant, Arc<Vec<PublicContract>>);
+
 pub struct PublicContracts {
-    regions: Mutex<HashMap<i64, (Instant, Arc<Vec<PublicContract>>)>>,
+    regions: Mutex<HashMap<i64, Listing>>,
     items: Mutex<HashMap<i64, Arc<Vec<PublicItem>>>>,
 }
 

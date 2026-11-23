@@ -34,7 +34,8 @@ pub(super) fn view(ctx: &Ctx) -> gtk::Box {
     let chosen = programs.iter().position(|p| Some(p.id) == filter_id);
     let receiver = chosen.map(|i| programs[i].receiver.clone()).unwrap_or(Receiver::Unset);
 
-    let bar = w::hbox(12);
+    // wraps the program filter under the periods in a narrow window
+    let bar = crate::pages::contracts::common::wrap_row();
     {
         let labels: Vec<&str> = Period::ALL.iter().map(|p| p.label()).collect();
         let ctx = ctx.clone();
@@ -44,9 +45,6 @@ pub(super) fn view(ctx: &Ctx) -> gtk::Box {
             gtk::glib::idle_add_local_once(move || ctx.rebuild());
         }));
     }
-    let spacer = w::hbox(0);
-    spacer.set_hexpand(true);
-    bar.append(&spacer);
     let mut names = vec!["All item exchanges".to_string()];
     names.extend(programs.iter().map(|p| format!("{} ({})", p.name, p.receiver_label())));
     let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
@@ -141,7 +139,9 @@ pub(super) fn view(ctx: &Ctx) -> gtk::Box {
         sw.add_css_class(class);
         sw.set_valign(gtk::Align::Center);
         item.append(&sw);
-        item.append(&w::line(label, &["body-small", "dim"]));
+        let l = w::line(label, &["body-small", "dim"]);
+        l.set_ellipsize(gtk::pango::EllipsizeMode::None);
+        item.append(&l);
         legend.append(&item);
     }
     let chart_box = w::vbox(8);
@@ -171,11 +171,17 @@ pub(super) fn view(ctx: &Ctx) -> gtk::Box {
     col
 }
 
-/// Two cards side by side, sharing the width (their tables scroll sideways when narrow).
-fn pair() -> gtk::Box {
-    let b = w::hbox(16);
-    b.set_homogeneous(true);
-    b
+/// Two cards side by side, sharing the width, or one above the other in a narrow window.
+fn pair() -> gtk::FlowBox {
+    let f = gtk::FlowBox::new();
+    f.set_selection_mode(gtk::SelectionMode::None);
+    f.set_homogeneous(true);
+    f.set_column_spacing(16);
+    f.set_row_spacing(16);
+    f.set_min_children_per_line(1);
+    f.set_max_children_per_line(2);
+    f.set_valign(gtk::Align::Start);
+    f
 }
 
 /// Summaries grouped by name, most ISK first.

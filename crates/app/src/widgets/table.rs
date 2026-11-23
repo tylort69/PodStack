@@ -44,6 +44,9 @@ fn cell_label(s: &str, numeric: bool) -> gtk::Widget {
     let l = gtk::Label::new(Some(s));
     l.set_xalign(if numeric { 1.0 } else { 0.0 });
     l.set_ellipsize(pango::EllipsizeMode::End);
+    // Short values keep their full width, so a narrow window scrolls the table sideways instead of cutting names
+    // and numbers to "…"; only long text (past 22 characters) is shortened.
+    l.set_width_chars(s.chars().count().min(22) as i32);
     if numeric {
         l.add_css_class("numeric");
     }
@@ -256,6 +259,11 @@ impl<T: 'static> Table<T> {
             if let Some(h) = self.max_height {
                 sw.set_max_content_height(h);
                 sw.set_vexpand(false);
+                // The column view guesses its natural height from rows it hasn't laid out yet and comes up short
+                // (a two-row table showed one), so ask for room for every row up to the maximum.
+                if self.min_height.is_none() {
+                    sw.set_min_content_height(h.min(48 + self.rows.len() as i32 * 62));
+                }
             }
             frame.append(&sw);
             frame.set_vexpand(self.max_height.is_none());

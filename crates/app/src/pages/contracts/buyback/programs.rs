@@ -98,7 +98,7 @@ fn program_card(ctx: &Ctx, p: &Program) -> gtk::Box {
     if !p.location.trim().is_empty() {
         rows.push(("Location", p.location.trim().to_string()));
     }
-    rows.push(("Queue tolerance", format!("up to {} over the offer needs a look", pct(p.tolerance))));
+    rows.push(("Tolerance", format!("asking up to {} over the offer needs a look in the queue", pct(p.tolerance))));
     let body = w::vbox(12);
     body.append(&w::key_values(&rows));
     if !p.rules.is_empty() {

@@ -28,7 +28,10 @@ pub fn build(ctx: &Ctx) -> Page {
     body.append(&header(ctx, View::Quote));
     let doc = cr::load_doc();
     body.append(&calculator(ctx, &doc));
-    body.append(&services_card(ctx, &doc));
+    // with no service yet the calculator's own empty state has the one button needed
+    if !doc.services.is_empty() {
+        body.append(&services_card(ctx, &doc));
+    }
     // the calculator holds what's being typed: it updates itself, and saving a service rebuilds the page
     Page::new("Contracts", body).static_page()
 }
@@ -62,7 +65,10 @@ fn calculator(ctx: &Ctx, doc: &CourierDoc) -> gtk::Box {
         let ctx = ctx.clone();
         add.connect_clicked(move |_| editor(&ctx, None));
         b.append(&add);
-        return w::card(&b);
+        b.set_vexpand(false);
+        let card = w::card(&b);
+        card.set_vexpand(false);
+        return card;
     }
     let services = Rc::new(doc.services.clone());
     let chosen = ctx.recall(SERVICE_KEY).and_then(|id| services.iter().position(|s| s.id == id)).unwrap_or(0);
