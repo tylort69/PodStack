@@ -154,6 +154,21 @@ impl DoctrineFit {
         }
         m.into_iter().collect()
     }
+    /// Renames the fit, in its EFT text's "[Ship, Name]" header too (what EVE and Pyfa name it on import).
+    pub fn rename(&mut self, name: &str) {
+        let name = name.trim();
+        self.name = name.to_string();
+        let mut lines = self.eft.lines();
+        let Some(first) = lines.next().map(str::trim) else { return };
+        if !(first.starts_with('[') && first.ends_with(']')) {
+            return;
+        }
+        let ship = first[1..first.len() - 1].split(',').next().unwrap_or_default().trim();
+        let ship = if ship.is_empty() { self.ship_name.as_str() } else { ship };
+        let rest: Vec<&str> = lines.collect();
+        let header = format!("[{ship}, {name}]");
+        self.eft = if rest.is_empty() { header } else { format!("{header}\n{}", rest.join("\n")) };
+    }
     pub fn ship(&self) -> Option<&'static ShipInfo> {
         SHIPS.by_id.get(&self.ship_id)
     }
@@ -239,6 +254,133 @@ impl DoctrineDoc {
     }
     pub fn fit_count(&self) -> usize {
         self.all_fits().len()
+    }
+}
+
+// ---------- editing ----------
+
+impl DoctrineDoc {
+    pub fn fit_mut(&mut self, id: &str) -> Option<&mut DoctrineFit> {
+        for d in self.groups.iter_mut().flat_map(|g| g.doctrines_mut()) {
+            if let Some(f) = d.fits.iter_mut().find(|f| f.id == id) {
+                return Some(f);
+            }
+        }
+        None
+    }
+
+    /// Removes a fit wherever it is.
+    pub fn remove_fit(&mut self, id: &str) -> Option<DoctrineFit> {
+        for d in self.groups.iter_mut().flat_map(|g| g.doctrines_mut()) {
+            if let Some(i) = d.fits.iter().position(|f| f.id == id) {
+                return Some(d.fits.remove(i));
+            }
+        }
+        None
+    }
+
+    /// Whether group `id` is `ancestor` or somewhere inside it.
+    pub fn is_within(&self, id: &str, ancestor: &str) -> bool {
+        self.group(ancestor).is_some_and(|a| a.walk().iter().any(|(_, g)| g.id == id))
+    }
+
+    /// Moves a doctrine to the end of another group. Returns whether it moved.
+    pub fn move_doctrine(&mut self, id: &str, to_group: &str) -> bool {
+        if self.group(to_group).is_none() {
+            return false;
+        }
+        let Some(d) = self.remove_doctrine(id) else { return false };
+        if let Some(g) = self.group_mut(to_group) {
+            g.doctrines.push(d);
+        }
+        true
+    }
+
+    /// Moves a fit to the end of another doctrine. Returns whether it moved.
+    pub fn move_fit(&mut self, id: &str, to_doctrine: &str) -> bool {
+        if self.doctrine(to_doctrine).is_none() {
+            return false;
+        }
+        let Some(f) = self.remove_fit(id) else { return false };
+        if let Some(d) = self.doctrine_mut(to_doctrine) {
+            d.fits.push(f);
+        }
+        true
+    }
+
+    /// Moves a group (with everything in it) to the end of another group, or to the top level (`None`). A group
+    /// can't go inside itself or one of its own subgroups. Returns whether it moved.
+    pub fn move_group(&mut self, id: &str, to: Option<&str>) -> bool {
+        if self.group(id).is_none() {
+            return false;
+        }
+        if let Some(t) = to {
+            if self.group(t).is_none() || self.is_within(t, id) {
+                return false;
+            }
+        }
+        let Some(g) = self.remove_group(id) else { return false };
+        match to.and_then(|t| self.group_mut(t)) {
+            Some(parent) => parent.groups.push(g),
+            None => self.groups.push(g),
+        }
+        true
+    }
+
+    /// Where a group, doctrine or fit sits among its siblings: (index, how many siblings, itself included).
+    pub fn position(&self, id: &str) -> Option<(usize, usize)> {
+        fn at<T>(list: &[T], same: impl Fn(&T) -> bool) -> Option<(usize, usize)> {
+            list.iter().position(same).map(|i| (i, list.len()))
+        }
+        if let Some(p) = at(&self.groups, |g| g.id == id) {
+            return Some(p);
+        }
+        self.all_groups().into_iter().find_map(|(_, g)| {
+            at(&g.groups, |s| s.id == id)
+                .or_else(|| at(&g.doctrines, |d| d.id == id))
+                .or_else(|| g.doctrines.iter().find_map(|d| at(&d.fits, |f| f.id == id)))
+        })
+    }
+
+    /// Moves a group, doctrine or fit one place up (or down) among its siblings. Returns whether it moved.
+    pub fn shift(&mut self, id: &str, up: bool) -> bool {
+        fn swap<T>(list: &mut [T], i: usize, up: bool) -> bool {
+            let j = if up { i.checked_sub(1) } else { Some(i + 1).filter(|j| *j < list.len()) };
+            match j {
+                Some(j) => {
+                    list.swap(i, j);
+                    true
+                }
+                None => false,
+            }
+        }
+        fn go(list: &mut [Group], id: &str, up: bool) -> Option<bool> {
+            if let Some(i) = list.iter().position(|g| g.id == id) {
+                return Some(swap(list, i, up));
+            }
+            for g in list.iter_mut() {
+                if let Some(i) = g.doctrines.iter().position(|d| d.id == id) {
+                    return Some(swap(&mut g.doctrines, i, up));
+                }
+                for d in g.doctrines.iter_mut() {
+                    if let Some(i) = d.fits.iter().position(|f| f.id == id) {
+                        return Some(swap(&mut d.fits, i, up));
+                    }
+                }
+                if let Some(r) = go(&mut g.groups, id, up) {
+                    return Some(r);
+                }
+            }
+            None
+        }
+        go(&mut self.groups, id, up).unwrap_or(false)
+    }
+}
+
+impl Doctrine {
+    /// Whether the doctrine already has a fit of this name on this hull (importing the same fit twice).
+    pub fn has_fit(&self, name: &str, ship_id: i64) -> bool {
+        self.fits.iter().any(|f| f.ship_id == ship_id && f.name.trim().eq_ignore_ascii_case(name.trim()))
     }
 }
 
@@ -498,6 +640,41 @@ pub fn pilots_of(chars: &[Arc<Character>], doctrine: &Doctrine) -> Vec<i64> {
         .collect()
 }
 
+/// A character's closest fit among several: one they can fly as it is, else the one with the least training left
+/// (between equal times, the one whose hull they can already fly). None when their skills haven't loaded.
+pub fn closest_fit<'a>(m: &'a Matrix, character_id: i64, fits: &[&'a DoctrineFit]) -> Option<(&'a DoctrineFit, &'a FitCheck)> {
+    fits.iter()
+        .filter_map(|f| m.get(&(character_id, f.id.clone())).map(|c| (*f, c)))
+        .min_by_key(|(_, c)| (c.time_to_fit, std::cmp::Reverse(c.readiness)))
+}
+
+/// The best a character does with any of several fits. None when their skills haven't loaded (or no fits).
+pub fn best_readiness(m: &Matrix, character_id: i64, fits: &[&DoctrineFit]) -> Option<Readiness> {
+    fits.iter().filter_map(|f| m.get(&(character_id, f.id.clone()))).map(|c| c.readiness).max()
+}
+
+/// How many characters can fly at least one of several fits, how many only the hull of one, and how many neither.
+/// Characters whose skills haven't loaded aren't counted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tally {
+    pub ready: usize,
+    pub hull_only: usize,
+    pub missing: usize,
+}
+
+pub fn tally(m: &Matrix, character_ids: &[i64], fits: &[&DoctrineFit]) -> Tally {
+    let mut t = Tally::default();
+    for id in character_ids {
+        match best_readiness(m, *id, fits) {
+            Some(Readiness::Ready) => t.ready += 1,
+            Some(Readiness::HullOnly) => t.hull_only += 1,
+            Some(Readiness::Missing) => t.missing += 1,
+            None => {}
+        }
+    }
+    t
+}
+
 // ---------- hulls: who can fly which class ----------
 
 /// Whether a character can sit in a hull (skills only).
@@ -669,6 +846,87 @@ mod tests {
         shared[0].groups.push(Group { id: "x".into(), name: "Incursions".into(), doctrines: vec![doc("Shield", vec![fit("Nightmare")])], ..Default::default() });
         assert_eq!(merge_groups(&mut d, shared), 1);
         assert_eq!(d.groups[0].groups[0].name, "Incursions");
+    }
+
+    #[test]
+    fn moves_and_reorders() {
+        let fit = |n: &str| DoctrineFit { id: n.into(), name: n.into(), ship_id: 1, ..Default::default() };
+        let doctrine = |id: &str, fits: Vec<DoctrineFit>| Doctrine { id: id.into(), name: id.into(), fits, ..Default::default() };
+        let caps = Group { id: "caps".into(), name: "Capitals".into(), doctrines: vec![doctrine("dreads", vec![fit("rev")])], ..Default::default() };
+        let init = Group {
+            id: "init".into(),
+            name: "Init".into(),
+            groups: vec![caps],
+            doctrines: vec![doctrine("main", vec![fit("ishtar"), fit("guardian")]), doctrine("hd", vec![])],
+            ..Default::default()
+        };
+        let solo = Group { id: "solo".into(), name: "Solo".into(), ..Default::default() };
+        let mut d = DoctrineDoc { groups: vec![init, solo] };
+
+        assert_eq!(d.position("guardian"), Some((1, 2)));
+        assert_eq!(d.position("hd"), Some((1, 2)));
+        assert_eq!(d.position("solo"), Some((1, 2)));
+        assert_eq!(d.position("caps"), Some((0, 1)));
+        assert!(d.shift("guardian", true));
+        assert!(!d.shift("guardian", true), "already first");
+        assert_eq!(d.doctrine("main").unwrap().2.fits[0].id, "guardian");
+        assert!(d.shift("init", false));
+        assert_eq!(d.groups[0].id, "solo");
+
+        // a group can't go inside itself
+        assert!(d.is_within("caps", "init") && !d.is_within("init", "caps"));
+        assert!(!d.move_group("init", Some("caps")));
+        assert!(!d.move_group("init", Some("init")));
+        assert!(d.move_group("caps", Some("solo")));
+        assert_eq!(d.parent_of("caps").map(|g| g.id.as_str()), Some("solo"));
+        assert!(d.move_group("caps", None));
+        assert_eq!(d.groups.len(), 3);
+
+        assert!(d.move_doctrine("dreads", "init"));
+        assert_eq!(d.doctrine("dreads").unwrap().1.id, "init");
+        assert!(!d.move_doctrine("dreads", "nowhere"));
+        assert!(d.doctrine("dreads").is_some(), "kept when the target is missing");
+
+        assert!(d.move_fit("rev", "hd"));
+        assert!(d.doctrine("hd").unwrap().2.has_fit("REV ", 1));
+        d.fit_mut("rev").unwrap().role = "DPS".into();
+        assert_eq!(d.remove_fit("rev").map(|f| f.role), Some("DPS".into()));
+        assert_eq!(d.fit_count(), 2);
+    }
+
+    #[test]
+    fn renaming_updates_the_eft_header() {
+        let mut f = DoctrineFit { name: "Sentry".into(), ship_name: "Ishtar".into(), eft: ISHTAR.trim().into(), ..Default::default() };
+        f.rename("  Home Defense Ishtar ");
+        assert_eq!(f.name, "Home Defense Ishtar");
+        assert!(f.eft.starts_with("[Ishtar, Home Defense Ishtar]\nDrone Damage Amplifier II"), "{}", f.eft);
+        assert_eq!(fitting::parse_eft(&f.eft).unwrap().fit_name.as_deref(), Some("Home Defense Ishtar"));
+        // no EFT header (nothing to keep in step)
+        let mut g = DoctrineFit { eft: String::new(), ..Default::default() };
+        g.rename("X");
+        assert_eq!((g.name.as_str(), g.eft.as_str()), ("X", ""));
+    }
+
+    #[test]
+    fn tallies_pilots() {
+        let ready = FitCheck { readiness: Readiness::Ready, time_to_fit: Duration::zero(), time_to_hull: Duration::zero(), missing_items: vec![] };
+        let hull = FitCheck { readiness: Readiness::HullOnly, time_to_fit: Duration::days(3), ..ready.clone() };
+        let far = FitCheck { readiness: Readiness::Missing, time_to_fit: Duration::days(1), time_to_hull: Duration::hours(5), ..ready.clone() };
+        let a = DoctrineFit { id: "a".into(), ..Default::default() };
+        let b = DoctrineFit { id: "b".into(), ..Default::default() };
+        let mut m = Matrix::new();
+        m.insert((1, "a".into()), ready.clone());
+        m.insert((1, "b".into()), hull.clone());
+        m.insert((2, "a".into()), hull);
+        m.insert((2, "b".into()), far);
+        // 3 has no skills loaded
+        let fits = [&a, &b];
+        assert_eq!(tally(&m, &[1, 2, 3], &fits), Tally { ready: 1, hull_only: 1, missing: 0 });
+        assert_eq!(best_readiness(&m, 3, &fits), None);
+        assert_eq!(closest_fit(&m, 1, &fits).map(|(f, _)| f.id.as_str()), Some("a"));
+        // least training wins, even when it's a hull they can't fly yet
+        assert_eq!(closest_fit(&m, 2, &fits).map(|(f, _)| f.id.as_str()), Some("b"));
+        assert_eq!(tally(&m, &[1, 2], &[&b]), Tally { ready: 0, hull_only: 1, missing: 1 });
     }
 
     #[test]
