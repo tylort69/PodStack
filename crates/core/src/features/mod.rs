@@ -18,6 +18,8 @@ pub mod fitting;
 pub mod comms;
 // Contract history, money flows and totals (`contracts`)
 pub mod contracts;
+// Couriers: active hauls, hauling history, rate cards and quotes, public courier finder (`courier`)
+pub mod courier;
 
 // Industry and planetary interaction helpers
 pub mod industry;
