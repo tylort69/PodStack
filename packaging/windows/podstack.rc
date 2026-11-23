@@ -1,12 +1,12 @@
 // The icon and file details Windows shows for podstack.exe (Explorer, the taskbar, Properties → Details).
-// PODSTACK_VERSION and PODSTACK_VERSION_COMMAS come from crates/app/build.rs.
+// crates/app/build.rs fills in @VERSION@, @VERSION_COMMAS@ and @ICON@ and compiles a copy.
 #include <winver.h>
 
-1 ICON "podstack.ico"
+1 ICON "@ICON@"
 
 1 VERSIONINFO
-FILEVERSION PODSTACK_VERSION_COMMAS
-PRODUCTVERSION PODSTACK_VERSION_COMMAS
+FILEVERSION @VERSION_COMMAS@
+PRODUCTVERSION @VERSION_COMMAS@
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -16,12 +16,12 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "PodStack"
       VALUE "FileDescription", "PodStack"
-      VALUE "FileVersion", PODSTACK_VERSION
+      VALUE "FileVersion", "@VERSION@"
       VALUE "InternalName", "podstack"
       VALUE "LegalCopyright", "AGPL-3.0"
       VALUE "OriginalFilename", "podstack.exe"
       VALUE "ProductName", "PodStack"
-      VALUE "ProductVersion", PODSTACK_VERSION
+      VALUE "ProductVersion", "@VERSION@"
     END
   END
   BLOCK "VarFileInfo"

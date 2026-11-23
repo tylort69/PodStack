@@ -10,7 +10,7 @@ Skills, wallets, markets, industry, planets, contracts and doctrines for every c
 native desktop app.
 
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE.md)
-[![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational.svg)](#install)
+[![Platform: Linux | Windows](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-informational.svg)](#install)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust%20%2B%20GTK4-orange.svg)](#building-from-source)
 [![Release](https://img.shields.io/github/v/release/tylort69/PodStack?label=release)](https://github.com/tylort69/PodStack/releases)
 
@@ -175,6 +175,21 @@ Optional extras: `matugen` (colors from your wallpaper), a notification daemon s
 (desktop alerts), and a bar with a tray such as waybar (tray icon). Hyprland users can add the window rules in
 [`packaging/hyprland/podstack.lua`](packaging/hyprland/podstack.lua).
 
+### Windows
+
+Download **PodStack-Native-Setup-x.y.z.exe** from the [latest release](https://github.com/tylort69/PodStack/releases)
+and run it. It installs for your user only (no administrator prompt) into `%LOCALAPPDATA%\Programs\PodStack Native`,
+adds PodStack to the Start menu and can be removed from **Settings → Apps** like any other app. Installing a newer
+version over it keeps your characters and settings.
+
+The installer isn't code-signed yet, so Windows SmartScreen may say it "protected your PC". Choose **More info →
+Run anyway** to continue.
+
+Prefer not to install? The **portable zip** runs from any folder: unzip it and start `bin\podstack.exe`. Windows
+only shows notifications for installed apps, so desktop alerts need the installer (Discord alerts work either way).
+
+PodStack Native keeps its files apart from the original Electron PodStack, so you can have both installed.
+
 ### Other Linux distributions
 
 PodStack runs anywhere GTK 4.20 or newer does. [Build it from source](#building-from-source) and run the binary,
@@ -209,14 +224,23 @@ light or system mode, with a choice of scheme variant and contrast:
 - **EVE factions**: Amarr, Caldari, Gallente, Minmatar, Jove, ORE, CONCORD, EDENCOM, Triglavian, Sansha's Nation,
   Guristas, Angel Cartel, Blood Raiders and Serpentis.
 - **Custom**: any color you pick.
+- **Windows accent** (on Windows): your accent color from Windows Settings → Personalization → Colors, with light
+  or dark following Windows.
 
 ## Your data and privacy
 
-- PodStack talks only to CCP: the EVE login servers, the ESI API and CCP's static data downloads. There is no
-  PodStack server, account, analytics or telemetry.
-- Login tokens are stored in `~/.local/share/podstack/auth.json`, readable only by you. Everything else lives in
-  `~/.local/share/podstack` (your characters, plans, doctrines, contract history and settings) and
-  `~/.cache/podstack` (prices, names and CCP's static data), and stays there.
+- PodStack talks to CCP (the EVE login servers, the ESI API and CCP's static data downloads), to GitHub once per
+  start to see whether a newer PodStack is out (Settings → General → Updates turns that off), and to Discord only
+  if you set up Discord alerts. There is no PodStack server, account, analytics or telemetry.
+- Login tokens are stored in `auth.json` in PodStack's data folder, readable only by you. That folder holds your
+  characters, plans, doctrines, contract history and settings; the cache folder holds prices, names and CCP's
+  static data. Both stay on your computer:
+
+  | | Linux | Windows |
+  |---|---|---|
+  | Data | `~/.local/share/podstack` | `%APPDATA%\PodStack Native` |
+  | Cache | `~/.cache/podstack` | `%LOCALAPPDATA%\PodStack Native` |
+
 - **Settings → Backup & restore** writes one password-protected file you can restore on another machine.
 - Removing a character from PodStack revokes its login and deletes its data and skill plans. You can also revoke PodStack's access at any
   time from your EVE account's [third-party applications](https://community.eveonline.com/support/third-party-applications/)
@@ -232,12 +256,24 @@ cd PodStack
 cargo run --release
 ```
 
+On Windows, build in an [MSYS2](https://www.msys2.org) UCRT64 shell:
+
+```sh
+pacman -S git mingw-w64-ucrt-x86_64-{rust,gcc,pkgconf,cmake,nasm,gtk4,adwaita-icon-theme}
+cargo run --release
+```
+
+`packaging/windows/bundle.sh dist/PodStack` then gathers the app and the GTK runtime into one folder, and
+[`packaging/windows/podstack.iss`](packaging/windows/podstack.iss) turns that into the installer with
+[Inno Setup](https://jrsoftware.org/isinfo.php). CI does both for every release.
+
 | Variable | Use |
 |---|---|
 | `PODSTACK_DATA_DIR` | Use another data folder instead of `~/.local/share/podstack`. |
 | `PODSTACK_CACHE_DIR` | Use another cache folder instead of `~/.cache/podstack`. |
 | `PODSTACK_LOG` | Log level, for example `debug`. |
 | `PODSTACK_OFFLINE` | Show the data on disk without refreshing any character (for the demo data). |
+| `PODSTACK_SNAPSHOT` | Save the window to this PNG file after a few seconds and quit (CI uses it to check rendering). |
 
 ### Project layout
 
@@ -292,8 +328,13 @@ No. PodStack checks CCP's static data releases every few hours and switches to a
 CCP only publishes in patch notes (such as the industry tax rates) can be edited under Industry → Facilities.
 
 **Windows or macOS?**
-This version is Linux-first. For Windows, the original Electron PodStack is available from
-[1234nin4321/PodStack](https://github.com/1234nin4321/PodStack/releases).
+Windows 10 and 11 are supported: see [Install → Windows](#windows). macOS isn't built yet. The original Electron
+PodStack is still available from [1234nin4321/PodStack](https://github.com/1234nin4321/PodStack/releases), and
+both can be installed side by side.
+
+**Where are the logs?**
+Run PodStack with `PODSTACK_LOG=debug` on Linux to see them in the terminal. On Windows they're written to
+`podstack.log` in `%LOCALAPPDATA%\PodStack Native`.
 
 ## Credits
 
