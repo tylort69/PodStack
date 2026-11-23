@@ -321,7 +321,11 @@ list.fleet-list > row:last-child { border-radius: 0 0 16px 16px; }
         b.set_size_request(180, -1);
         b.set_valign(gtk::Align::Center);
         let top = w::hbox(8);
-        top.append(&w::line(&c.name(), &["title-small"]));
+        let name = w::line(&c.name(), &["title-small"]);
+        // EVE names are at most 37 characters: ask for room for the whole name, so it isn't cut short when the
+        // row has space
+        name.set_width_chars(c.name().chars().count().min(37) as i32);
+        top.append(&name);
         if let Some(badge) = clone_badge(c) {
             top.append(&badge);
         }

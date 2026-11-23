@@ -10,7 +10,7 @@ use chrono::{DateTime, Duration, Utc};
 use podstack_core::character::Character;
 use podstack_core::domains::contracts::{Bid, Contract, ContractItem, ContractsData};
 use podstack_core::domains::info::{Alliance, Corporation, Info};
-use podstack_core::domains::skills::{Attributes, Skill, SkillsData};
+use podstack_core::domains::skills::{Attributes, QueueEntry, Skill, SkillsData};
 use podstack_core::features::contracts::{Archive, ArchivedContract, Valuation};
 use podstack_core::features::doctrines::{self, Doctrine, DoctrineDoc, Group};
 use podstack_core::sde::SKILLS;
@@ -49,6 +49,8 @@ fn is_capital(name: &str) -> bool {
 fn level(p: Profile, group: &str, name: &str) -> u8 {
     let cap = is_capital(name);
     match p {
+        // a few titans and jump freighters still training
+        Profile::Veteran if name.contains("Titan") || name.contains("Jump Freighter") || name.contains("Lancer") => 4,
         Profile::Veteran => 5,
         Profile::Capitals => match group {
             "Spaceship Command" => 5,
@@ -418,7 +420,31 @@ async fn main() {
             birthday: Some(now - Duration::days(400 * (7 - (id - 90000000)))),
             ..Default::default()
         });
-        c.skills = Some(skills_for(profile));
+        let skills = skills_for(profile);
+        // a few levels in training (the new character is idle, for the queue health views)
+        if !matches!(profile, Profile::New) {
+            let mut at = now - Duration::hours(3);
+            let mut queue = Vec::new();
+            for (pos, s) in skills.skills.iter().filter(|s| s.trained_skill_level < 5).take(4).enumerate() {
+                let info = SKILLS.get(s.skill_id).unwrap();
+                let level = s.trained_skill_level + 1;
+                let hours = 6 + 10 * (pos as i64 + 1) * info.training_time_multiplier as i64;
+                queue.push(QueueEntry {
+                    skill_id: s.skill_id,
+                    finished_level: level,
+                    queue_position: pos as i32,
+                    start_date: Some(at),
+                    finish_date: Some(at + Duration::hours(hours)),
+                    training_start_sp: Some(s.skillpoints_in_skill),
+                    level_start_sp: Some(info.sp_for_level(level - 1)),
+                    level_end_sp: Some(info.sp_for_level(level)),
+                    skill_name: info.name.clone(),
+                });
+                at += Duration::hours(hours);
+            }
+            c.skill_queue = Some(queue);
+        }
+        c.skills = Some(skills);
         c.attributes = Some(Attributes { charisma: 19, intelligence: 24, memory: 24, perception: 27, willpower: 21, ..Default::default() });
         c.wallet = Some([4.2e9, 1.1e9, 640e6, 2.8e9, 310e6, 12e6][(id - 90000001) as usize]);
         let listed: Vec<Contract> = archive
