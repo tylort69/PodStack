@@ -212,6 +212,9 @@ pub fn apply(scheme: &Scheme) {
     // GTK keeps inherited colors (`label { color: inherit }`) until a widget's style is invalidated, so a live theme
     // change would leave plain labels in the old theme's color. Flipping a class on each window restyles everything.
     for win in gtk::Window::list_toplevels() {
+        if let Ok(win) = win.clone().downcast::<gtk::Window>() {
+            style_frame(&win, scheme);
+        }
         if win.has_css_class("theme-a") {
             win.remove_css_class("theme-a");
             win.add_css_class("theme-b");
@@ -240,6 +243,27 @@ pub fn add_css(css: &'static str) {
             apply(&s);
         }
     }
+}
+
+/// Colors a window's native frame (Windows' title bar and border) from the scheme, so it reads as part of the app
+/// bar below it. Call it once the window is realized; `apply` restyles every open window when the theme changes.
+pub fn style_frame(win: &gtk::Window, scheme: &Scheme) {
+    #[cfg(windows)]
+    {
+        extern "C" {
+            fn gdk_win32_surface_get_handle(surface: *mut gdk::ffi::GdkSurface) -> isize;
+        }
+        use gtk::glib::translate::ToGlibPtr;
+        let Some(surface) = win.surface() else { return };
+        let rgb = |role: &str| u32::from_str_radix(scheme.get(role).trim_start_matches('#').get(..6).unwrap_or("000000"), 16).unwrap_or(0);
+        // SAFETY: the surface is a live Win32 surface (GTK's only backend on Windows), so this returns its HWND.
+        let hwnd = unsafe { gdk_win32_surface_get_handle(surface.to_glib_none().0) };
+        if hwnd != 0 {
+            podstack_core::platform::style_frame(hwnd, scheme.dark, rgb("surface"), rgb("on_surface"), rgb("outline_variant"));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (win, scheme);
 }
 
 /// The scheme in use (for widgets that draw with cairo, e.g. charts).

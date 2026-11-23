@@ -18,6 +18,13 @@ use gtk::{gio, glib, prelude::*};
 use podstack_core::{config, platform, Core, Event};
 
 fn main() -> glib::ExitCode {
+    // GTK draws its own title bar on Windows unless told not to, and then moves and resizes the window itself, which
+    // feels sluggish and loses Snap (dragging to a screen edge, snap layouts). The native frame gets both from
+    // Windows; `theme::style_frame` colors it to match.
+    #[cfg(windows)]
+    if std::env::var_os("GTK_CSD").is_none() {
+        std::env::set_var("GTK_CSD", "0");
+    }
     // A restart (after restoring a backup) waits for the old copy to finish exiting before it claims anything.
     if let Some(pid) = std::env::var("PODSTACK_WAIT_PID").ok().and_then(|p| p.parse().ok()) {
         platform::wait_for_exit(pid);

@@ -37,6 +37,13 @@ pub fn prefers_dark() -> Option<bool> {
     imp::prefers_dark()
 }
 
+/// Colors the native frame of the window `hwnd` (a Win32 `HWND`) to match the theme: dark or light controls, and on
+/// Windows 11 the title bar's background, text and border as `0xRRGGBB`. Windows 10 ignores the colors and keeps
+/// its own title bar, in dark when asked. Nothing to do on Linux, where the compositor or GTK draws the frame.
+pub fn style_frame(hwnd: isize, dark: bool, caption: u32, text: u32, border: u32) {
+    imp::style_frame(hwnd, dark, caption, text, border)
+}
+
 #[cfg(not(windows))]
 mod imp {
     use super::Instance;
@@ -64,6 +71,8 @@ mod imp {
     pub fn prefers_dark() -> Option<bool> {
         None
     }
+
+    pub fn style_frame(_hwnd: isize, _dark: bool, _caption: u32, _text: u32, _border: u32) {}
 }
 
 #[cfg(windows)]
@@ -158,5 +167,21 @@ mod imp {
 
     pub fn prefers_dark() -> Option<bool> {
         dword("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", "AppsUseLightTheme").map(|v| v == 0)
+    }
+
+    pub fn style_frame(hwnd: isize, dark: bool, caption: u32, text: u32, border: u32) {
+        use windows_sys::Win32::Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
+        };
+        // COLORREF is 0x00BBGGRR.
+        let colorref = |rgb: u32| ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff);
+        let set = |attribute: i32, value: u32| unsafe {
+            // Each attribute fails quietly on Windows versions that don't have it, which is what we want.
+            DwmSetWindowAttribute(hwnd as _, attribute as _, (&value as *const u32).cast(), std::mem::size_of::<u32>() as u32);
+        };
+        set(DWMWA_USE_IMMERSIVE_DARK_MODE, dark as u32);
+        set(DWMWA_CAPTION_COLOR, colorref(caption));
+        set(DWMWA_TEXT_COLOR, colorref(text));
+        set(DWMWA_BORDER_COLOR, colorref(border));
     }
 }

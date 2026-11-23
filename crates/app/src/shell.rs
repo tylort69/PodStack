@@ -37,6 +37,7 @@ pub fn build(app: &gtk::Application, core: Arc<Core>) -> gtk::ApplicationWindow 
         .icon_name(config::APP_ID)
         .build();
     window.set_size_request(760, 520);
+    window.connect_realize(|win| crate::theme::style_frame(win.upcast_ref(), &crate::theme::current()));
     if let Ok(t) = std::env::var("PODSTACK_DEBUG_WIDTHS") {
         debug_widths(&window, t.parse().unwrap_or(600));
     }
