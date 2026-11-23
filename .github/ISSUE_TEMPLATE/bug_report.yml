@@ -1,0 +1,40 @@
+name: Bug report
+description: Something in PodStack doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please never paste tokens, refresh tokens or your EVE application's secret key here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Contracts → Courier
+        2. …
+  - type: input
+    id: version
+    attributes:
+      label: PodStack version
+      description: Shown on the About page, or `pacman -Q podstack-git`.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Distribution and desktop
+      placeholder: Arch Linux, Hyprland 0.52
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Run `PODSTACK_LOG=debug podstack` and paste the lines around the problem.
+      render: text
