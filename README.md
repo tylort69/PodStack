@@ -6,7 +6,7 @@
 
 **The EVE Online companion for capsuleers who fly more than one character.**
 
-Skills, wallets, markets, industry, planets, contracts and doctrines for every character you own, in one fast
+Skills, wallets, kills, markets, industry, planets, contracts and doctrines for every character you own, in one fast
 native desktop app.
 
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE.md)
@@ -75,6 +75,21 @@ contracts over the last six months.
   entries behind it.
 
 <img src="docs/screenshots/wallet.png" width="100%" alt="The wallet across all characters, with income by source">
+
+### Kills and losses
+
+What a killboard shows one character at a time, for all of your characters together.
+
+- **Totals** for the last 7, 30 or 90 days or everything PodStack has seen: kills and losses, ISK destroyed and
+  lost, ISK efficiency, solo kills, final blows, and kills several of your characters were on, which count once.
+- **Over time**, **per character**, **per ship you flew**, and by the victims' ship class or group.
+- **Where and who**: systems, regions and security bands, the corporations and alliances you kill most and that
+  kill you most, and the hours and weekdays you fight.
+- **Top kills and most expensive losses**, and every killmail with its fit, what dropped, the attackers (your characters
+  marked) and a link to zKillboard.
+- **History that keeps growing.** ESI only lists recent killmails; PodStack keeps every one it sees.
+
+<img src="docs/screenshots/kills.png" width="100%" alt="Kills and losses across all characters">
 
 ### Doctrines
 
@@ -181,6 +196,8 @@ From a first frigate to alliance capital programs.
 | Industry planner: a titan from the ground up | Asset search: doctrine ships owned, missing and their cost |
 | <img src="docs/screenshots/assets.png" alt="Assets with ships as containers"> | <img src="docs/screenshots/wallet.png" alt="The wallet across all characters"> |
 | Assets: ships as containers | Wallet: income and spending across characters |
+| <img src="docs/screenshots/kills.png" alt="Kills and losses across all characters"> | <img src="docs/screenshots/overview.png" alt="The overview with characters in folders"> |
+| Kills and losses across all characters | Characters in folders in the sidebar |
 
 ## Install
 
