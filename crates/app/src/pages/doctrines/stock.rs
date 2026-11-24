@@ -24,6 +24,9 @@ use std::collections::{HashMap, HashSet};
 
 const GROUP_KEY: &str = "doctrines.stock.group";
 const HULL_ONLY_KEY: &str = "doctrines.stock.hull_only";
+/// Characters left out of the combined shopping list, as comma-separated ids. Leaving out rather than picking
+/// means a new character, or one that newly needs ships, shows up in the list by itself.
+const LIST_OFF_KEY: &str = "doctrines.stock.list_off";
 
 const CSS: &str = "
 .dsi-account-head { margin-top: 8px; }
@@ -169,23 +172,92 @@ pub fn build(ctx: &Ctx) -> Page {
         }
     }
 
-    let all: Vec<(&CharacterInventory, &Purchase)> =
-        groups.iter().flat_map(|g| &g.characters).flat_map(|c| c.to_buy.iter().map(move |p| (c, p))).collect();
-    if !all.is_empty() {
-        let rows: Vec<BuyRow> = all.iter().map(|(c, p)| BuyRow::new(c, p)).collect();
-        let actions = list_actions(ctx, &all, "all characters");
-        body.append(&w::card_with(
-            "Shopping list: all characters",
-            Some(&format!(
-                "{} ships for {} ISK at Jita: what every character needs to reach its stock targets",
-                t.to_buy,
-                fmt::isk_short(t.cost)
-            )),
-            &actions,
-            &buy_table(rows, true),
-        ));
+    let buyers: Vec<&CharacterInventory> = groups.iter().flat_map(|g| &g.characters).filter(|c| !c.to_buy.is_empty()).collect();
+    if !buyers.is_empty() {
+        body.append(&all_list_card(ctx, &buyers));
     }
     Page::new("Doctrines", body)
+}
+
+/// The shopping list for the characters picked with the chips above it (all of them unless some are toggled off).
+fn all_list_card(ctx: &Ctx, buyers: &[&CharacterInventory]) -> gtk::Widget {
+    let off: HashSet<i64> = ctx.recall(LIST_OFF_KEY).unwrap_or_default().split(',').filter_map(|v| v.parse().ok()).collect();
+    let picked: Vec<&CharacterInventory> = buyers.iter().copied().filter(|c| !off.contains(&c.character_id)).collect();
+    let save_off = |ctx: &Ctx, off: &HashSet<i64>| {
+        let mut ids: Vec<i64> = off.iter().copied().collect();
+        ids.sort();
+        ctx.remember(LIST_OFF_KEY, ids.iter().map(i64::to_string).collect::<Vec<_>>().join(","));
+        ctx.rebuild();
+    };
+
+    let content = w::vbox(12);
+    let pick = w::hbox(8);
+    pick.append(&w::line("Characters", &["label-large", "dim"]));
+    let all_ids: Vec<i64> = buyers.iter().map(|c| c.character_id).collect();
+    let everyone = w::button("All", Btn::Text);
+    everyone.set_sensitive(picked.len() != buyers.len());
+    let (c, ids) = (ctx.clone(), all_ids.clone());
+    everyone.connect_clicked(move |_| {
+        // keep characters that have nothing to buy right now as they were
+        let mut off: HashSet<i64> = c.recall(LIST_OFF_KEY).unwrap_or_default().split(',').filter_map(|v| v.parse().ok()).collect();
+        off.retain(|id| !ids.contains(id));
+        save_off(&c, &off);
+    });
+    pick.append(&everyone);
+    let nobody = w::button("None", Btn::Text);
+    nobody.set_sensitive(!picked.is_empty());
+    let (c, ids) = (ctx.clone(), all_ids);
+    nobody.connect_clicked(move |_| {
+        let mut off: HashSet<i64> = c.recall(LIST_OFF_KEY).unwrap_or_default().split(',').filter_map(|v| v.parse().ok()).collect();
+        off.extend(ids.iter().copied());
+        save_off(&c, &off);
+    });
+    pick.append(&nobody);
+    content.append(&pick);
+
+    let chips = gtk::FlowBox::new();
+    chips.set_selection_mode(gtk::SelectionMode::None);
+    chips.set_column_spacing(8);
+    chips.set_row_spacing(8);
+    chips.set_max_children_per_line(30);
+    for b in buyers {
+        let on = !off.contains(&b.character_id);
+        let chip = w::chip(&format!("{} ({})", b.name, b.ships_to_buy()), on);
+        chip.set_tooltip_text(Some(&format!("{} ships for {} ISK", b.ships_to_buy(), fmt::isk_short(b.cost()))));
+        let (c, id) = (ctx.clone(), b.character_id);
+        chip.connect_toggled(move |t| {
+            let mut off: HashSet<i64> = c.recall(LIST_OFF_KEY).unwrap_or_default().split(',').filter_map(|v| v.parse().ok()).collect();
+            if t.is_active() {
+                off.remove(&id);
+            } else {
+                off.insert(id);
+            }
+            save_off(&c, &off);
+        });
+        chips.append(&chip);
+    }
+    content.append(&chips);
+
+    let list: Vec<(&CharacterInventory, &Purchase)> = picked.iter().flat_map(|c| c.to_buy.iter().map(move |p| (*c, p))).collect();
+    let (title, subtitle, actions) = if list.is_empty() {
+        content.append(&w::text("Pick one or more characters to see what they need to buy.", &["body-medium", "dim"]));
+        ("Shopping list".to_string(), "No characters picked".to_string(), Vec::new())
+    } else {
+        let ships: u32 = picked.iter().map(|c| c.ships_to_buy()).sum();
+        let cost: f64 = picked.iter().map(|c| c.cost()).sum();
+        let (title, who) = if picked.len() == buyers.len() {
+            ("Shopping list: all characters".to_string(), "all characters".to_string())
+        } else if picked.len() == 1 {
+            (format!("Shopping list: {}", picked[0].name), picked[0].name.clone())
+        } else {
+            (format!("Shopping list: {} characters", picked.len()), format!("{} characters", picked.len()))
+        };
+        let rows: Vec<BuyRow> = list.iter().map(|(c, p)| BuyRow::new(c, p)).collect();
+        content.append(&buy_table(rows, true));
+        let actions = list_actions(ctx, &list, &who);
+        (title, format!("{ships} ships for {} ISK at Jita: what these characters need to reach their stock targets", fmt::isk_short(cost)), actions)
+    };
+    w::card_with(&title, Some(&subtitle), &actions, &content).upcast()
 }
 
 fn toolbar(ctx: &Ctx, doc: &dc::DoctrineDoc, group: Option<&str>, hull_only: bool) -> gtk::Widget {
