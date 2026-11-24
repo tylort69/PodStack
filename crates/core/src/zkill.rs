@@ -5,8 +5,10 @@
 //! everyone and lists them per character: `GET /api/characterID/{id}/page/{n}/`, newest first, 200 a page, each
 //! the mail in ESI's own format plus a `zkb` object with its hash.
 //!
-//! zKillboard is a volunteer service, so every request here goes through one shared pace: at most one a second,
-//! and after a 429 or a server error none at all until a growing pause (or the server's `Retry-After`) has passed.
+//! zKillboard is a volunteer service that publishes no number for its rate limit, only asks clients to avoid bursts,
+//! space requests out, send gzip and a descriptive User-Agent, and honor `Retry-After`. So every request here, for
+//! all of the user's characters together, goes through one shared pace: one at a time, two seconds apart, and after
+//! a 429 or a server error none at all until a growing pause (or the server's `Retry-After`) has passed.
 
 use crate::config;
 use crate::features::killboard::EsiKillmail;
@@ -17,7 +19,9 @@ use std::time::{Duration, Instant};
 const BASE: &str = "https://zkillboard.com/api";
 /// Mails per page.
 pub const PAGE_SIZE: usize = 200;
-const SPACING: Duration = Duration::from_millis(1100);
+/// The deepest page zKillboard serves (20,000 mails).
+pub const LAST_PAGE: u32 = 100;
+const SPACING: Duration = Duration::from_secs(2);
 const FIRST_PAUSE: Duration = Duration::from_secs(60);
 const MAX_PAUSE: Duration = Duration::from_secs(3600);
 

@@ -421,8 +421,13 @@ pub fn zkill_enabled(core: &Core) -> bool {
     core.setting::<Option<bool>>(ZKILL_SETTING).unwrap_or(true)
 }
 
-/// How many zKillboard pages one character's refresh reads at most: a long history comes in over a few hours.
+/// How many zKillboard pages one walk reads before its mails are archived (so the page fills in as they come).
 pub const ZKILL_PAGES: u32 = 10;
+/// How many walks one character's refresh makes while reading its history: all 100 pages zKillboard serves, once.
+/// The killmail refresh runs once an hour, so stopping after a single walk left a busy pilot's history hours behind
+/// zKillboard. The requests still go through `zkill`'s shared pace, so more characters only make the queue longer,
+/// never the requests faster; afterwards each character reads one page an hour.
+const ZKILL_WALKS: u32 = 10;
 
 /// Whether to read the next older page after one of `len` mails: never after a short (last) page; while
 /// backfilling, always; otherwise only while every mail on the page was new (a gap since the last refresh).
@@ -443,6 +448,11 @@ where
     let mut found = Vec::new();
     let mut seen = HashSet::new();
     for _ in 0..ZKILL_PAGES {
+        // zKillboard doesn't serve older pages, so that's as much history as there is to read
+        if page > zkill::LAST_PAGE {
+            p = ZkillProgress { backfilled: true, next_page: 0 };
+            break;
+        }
         let list = match fetch(page).await {
             Ok(list) => list,
             // a page zKillboard won't serve this deep into the history: take it as read rather than ask forever
@@ -481,8 +491,20 @@ pub async fn from_zkill(cx: &Cx) {
         return;
     }
     let _walking = ZKILL_WALK.lock().await;
+    for _ in 0..ZKILL_WALKS {
+        let start = archive_snapshot().zkill.get(&cx.id).copied().unwrap_or_default();
+        let progress = zkill_walk_once(cx, start).await;
+        // done with the history, or zKillboard is busy or failing (the walk got no further): the next refresh
+        // carries on
+        if start.backfilled || progress.backfilled || progress.next_page <= start.next_page.max(1) {
+            break;
+        }
+    }
+}
+
+/// One walk of up to [`ZKILL_PAGES`] pages from where the character's last one stopped; what it got is archived.
+async fn zkill_walk_once(cx: &Cx, start: ZkillProgress) -> ZkillProgress {
     let id = cx.id;
-    let start = archive_snapshot().zkill.get(&id).copied().unwrap_or_default();
     let (found, progress) = {
         let a = archive_snapshot();
         zkill_walk(start, |k| a.contains(k), |page| zkill::page(id, page)).await
@@ -496,6 +518,7 @@ pub async fn from_zkill(cx: &Cx) {
     let (new, names) = place(cx, mails).await;
     archive(&cx.core, id, &listed, new, names);
     set_zkill_progress(&cx.core, id, progress);
+    progress
 }
 
 /// A mail's id and hash, which fetch it from ESI.
@@ -1270,6 +1293,20 @@ mod tests {
         assert_eq!(pages.get(), 1);
         assert_eq!(found.iter().map(|m| m.killmail_id).collect::<Vec<_>>(), (3001..=3010).rev().collect::<Vec<_>>());
         assert_eq!(p2, p);
+    }
+
+    #[tokio::test]
+    async fn zkill_stops_at_the_last_page_it_serves() {
+        let start = ZkillProgress { backfilled: false, next_page: zkill::LAST_PAGE };
+        let pages = std::cell::Cell::new(0);
+        let (found, p) = zkill_walk(start, |_| false, |n| {
+            pages.set(pages.get() + 1);
+            history(30_000)(n)
+        })
+        .await;
+        assert_eq!(pages.get(), 1, "page 101 is never asked for");
+        assert_eq!(found.len(), 200);
+        assert_eq!(p, ZkillProgress { backfilled: true, next_page: 0 });
     }
 
     #[tokio::test]
