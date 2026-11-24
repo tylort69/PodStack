@@ -6,6 +6,8 @@ pub mod plans;
 // Fleet pages: SP farming, farm profit, accounts, queue health
 pub mod farming;
 pub mod accounts;
+// The drawer's character order and folders (`char_folders`)
+pub mod char_folders;
 pub mod queue_health;
 
 // Skill plans: plan simulation, import/export, remaps, accelerators, implant profiles, skillbooks

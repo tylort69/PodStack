@@ -3,6 +3,7 @@
 // No console window behind the app on Windows; logs go to a file there instead (see `init_logging`).
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod char_tree;
 mod ctx;
 mod fonts;
 mod images;

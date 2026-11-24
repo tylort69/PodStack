@@ -3,8 +3,9 @@
 
 use crate::ctx::{CharTab, Ctx, CtxInner, Page, Route};
 use crate::widgets::{self as w, Btn};
-use crate::{login, pages, services};
+use crate::{char_tree, login, pages, services};
 use gtk::{gdk, glib, prelude::*};
+use podstack_core::features::char_folders;
 use podstack_core::{config, Core, Event};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -23,6 +24,10 @@ struct Shell {
     live: Cell<bool>,
     rebuild_pending: Cell<bool>,
     drawer_pending: Cell<bool>,
+    /// A character or folder is being dragged in the drawer.
+    dragging: Rc<Cell<bool>>,
+    /// A drawer rebuild was held off by a drag.
+    drawer_held: Cell<bool>,
     snackbar: gtk::Revealer,
     snack_label: gtk::Label,
     snack_timer: RefCell<Option<glib::SourceId>>,
@@ -143,6 +148,8 @@ pub fn build(app: &gtk::Application, core: Arc<Core>) -> gtk::ApplicationWindow 
         live: Cell::new(true),
         rebuild_pending: Cell::new(false),
         drawer_pending: Cell::new(false),
+        dragging: Rc::new(Cell::new(false)),
+        drawer_held: Cell::new(false),
         snackbar: snackbar.clone(),
         snack_label,
         snack_timer: RefCell::new(None),
@@ -339,6 +346,8 @@ impl Shell {
         let relevant = match ev {
             Event::CharacterUpdated(id) => route.shows_character(*id),
             Event::CharactersChanged => true,
+            // The drawer's own layout changes only the drawer.
+            Event::Doc(d) if d == char_folders::DOC => false,
             Event::SettingsChanged | Event::Doc(_) => !matches!(route, Route::Settings),
             Event::Toast(m) => {
                 self.toast(m);
@@ -402,7 +411,17 @@ impl Shell {
     }
 
     fn rebuild_drawer(self: &Rc<Self>) {
+        // Rebuilding would drop the row being dragged and end the drag: wait for it to finish.
+        if self.dragging.get() {
+            self.drawer_held.set(true);
+            return;
+        }
         let b = &self.drawer_box;
+        // Keep the list where it was scrolled to: the new rows have no height until they're laid out.
+        if let Some(adj) = b.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>().map(|s| s.vadjustment()) {
+            let v = adj.value();
+            glib::idle_add_local_once(move || adj.set_value(v));
+        }
         while let Some(c) = b.first_child() {
             b.remove(&c);
         }
@@ -423,44 +442,31 @@ impl Shell {
         let div = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         div.add_css_class("nav-divider");
         b.append(&div);
-        b.append(&w::line("Characters", &["nav-section-label"]));
-        for c in core.characters() {
-            let route = Route::Character(c.id, match current {
-                Route::Character(_, tab) => tab,
-                _ => crate::ctx::CharTab::Summary,
-            });
-            let btn = gtk::Button::new();
-            btn.add_css_class("nav-item");
-            btn.add_css_class("compact");
-            let row = w::hbox(12);
-            row.append(&w::avatar(&c.portrait_url(64), 28));
-            let name = w::line(&c.name(), &[]);
-            name.set_hexpand(true);
-            row.append(&name);
-            let needs_login = core.auth.get(c.id).map(|a| a.needs_reauth()).unwrap_or(false);
-            if needs_login {
-                let warn = w::icon_sized("error", 18);
-                warn.add_css_class("error-text");
-                warn.set_tooltip_text(Some("Login expired"));
-                row.append(&warn);
-            } else if c.skill_queue.is_some() && !c.is_training() {
-                let warn = w::icon_sized("pause_circle", 18);
-                warn.add_css_class("warning-text");
-                warn.set_tooltip_text(Some("Not training"));
-                row.append(&warn);
-            }
-            btn.set_child(Some(&row));
-            if current.same_destination(&route) {
-                btn.add_css_class("active");
-            }
-            let weak = Rc::downgrade(self);
-            btn.connect_clicked(move |_| {
-                if let Some(s) = weak.upgrade() {
-                    s.navigate(route, true);
-                }
-            });
-            b.append(&btn);
-        }
+        let hooks = {
+            let (nav, rebuild, ended) = (Rc::downgrade(self), Rc::downgrade(self), Rc::downgrade(self));
+            Rc::new(char_tree::Hooks {
+                navigate: Box::new(move |r| {
+                    if let Some(s) = nav.upgrade() {
+                        s.navigate(r, true);
+                    }
+                }),
+                rebuild: Box::new(move || {
+                    if let Some(s) = rebuild.upgrade() {
+                        s.rebuild_drawer();
+                    }
+                }),
+                dragging: self.dragging.clone(),
+                drag_ended: Box::new(move || {
+                    if let Some(s) = ended.upgrade() {
+                        if s.drawer_held.replace(false) {
+                            // after the drop's own change, which runs once the drag is over
+                            glib::idle_add_local_once(move || s.rebuild_drawer());
+                        }
+                    }
+                }),
+            })
+        };
+        b.append(&char_tree::build(&self.ctx, current, hooks));
         let add = w::button_icon("person_add", "Add character", Btn::Text);
         add.set_halign(gtk::Align::Start);
         add.set_margin_start(4);
