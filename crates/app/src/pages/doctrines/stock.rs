@@ -16,7 +16,7 @@ use gtk::prelude::*;
 use podstack_core::domains::assets::SCOPE;
 use podstack_core::features::accounts;
 use podstack_core::features::contracts::csv;
-use podstack_core::features::doctrine_inventory::{self as inv, Basis, CharacterInventory, Cost, Holding, Options, OwnedShip, Purchase, Source, Targets};
+use podstack_core::features::doctrine_inventory::{self as inv, Basis, CharacterInventory, Cost, Holding, Options, OwnedShip, Purchase, Source, StockPlace, Targets};
 use podstack_core::features::doctrines::{self as dc, Readiness};
 use podstack_core::{config, fmt};
 use std::cell::RefCell;
@@ -145,7 +145,8 @@ pub fn build(ctx: &Ctx) -> Page {
     }
 
     body.append(&w::text(
-        "Each pilot keeps a stock of every doctrine fit it can fly: one of each unless Stock targets says otherwise. Inside \
+        "Each pilot keeps a stock of every doctrine fit it can fly: one of each unless Stock targets says otherwise, \
+         anywhere unless the doctrine names places (then that many at each place, and only ships there count). Inside \
          a doctrine each ship counts for one fit, but a ship counts for every doctrine it's in, so a hull several \
          doctrines are short of is bought once, as many as the doctrine short of the most. Fits that list modules are \
          bought as the whole fit (hull, modules, charges and drones), the rest as the hull.",
@@ -316,7 +317,7 @@ fn character_card(ctx: &Ctx, c: &CharacterInventory, targets: &Targets, group: O
         }
     }
 
-    let rows: Vec<DoctrineRow> = c.doctrines.iter().map(DoctrineRow::new).collect();
+    let rows: Vec<DoctrineRow> = c.doctrines.iter().map(|d| DoctrineRow::new(d, targets.places(&d.doctrine.id))).collect();
     card.append(&doctrine_table(rows, c.assets_loaded));
     let fits: Vec<FitRow> =
         c.doctrines.iter().flat_map(|d| d.flyable.iter().map(move |l| FitRow::new(d, l, targets.resolve(Some(c.character_id), Some(&d.doctrine.id), Some(&l.fit.id)).1))).collect();
@@ -324,7 +325,7 @@ fn character_card(ctx: &Ctx, c: &CharacterInventory, targets: &Targets, group: O
         let key = format!("doctrines.stock.open.{}", c.character_id);
         // open by default when something's short, so the gaps are in view
         let open = ctx.recall(&key).map(|v| v == "1").unwrap_or(c.assets_loaded && c.short() > 0);
-        card.append(&expander(ctx, &format!("Stock by fit ({} fits)", fits.len()), key, open, &fit_table(fits, c.assets_loaded)));
+        card.append(&expander(ctx, &format!("Stock by fit ({} fits)", c.flyable()), key, open, &fit_table(fits, c.assets_loaded)));
     }
     if c.assets_loaded && !c.to_buy.is_empty() {
         let all: Vec<(&CharacterInventory, &Purchase)> = c.to_buy.iter().map(|p| (c, p)).collect();
@@ -379,7 +380,7 @@ fn list_actions(ctx: &Ctx, list: &[(&CharacterInventory, &Purchase)], who: &str)
 /// The list per character and item: what each character buys, so a list for several still says who needs what.
 fn list_csv(list: &[(&CharacterInventory, &Purchase)]) -> String {
     let prices = PRICES.with(|p| p.borrow().clone());
-    let mut rows = vec![["Character", "Item", "Quantity", "Jita sell each", "Jita sell total"].map(String::from).to_vec()];
+    let mut rows = vec![["Character", "Deliver to", "Item", "Quantity", "Jita sell each", "Jita sell total"].map(String::from).to_vec()];
     let mut chars: Vec<&CharacterInventory> = Vec::new();
     for (c, _) in list {
         if !chars.iter().any(|x| x.character_id == c.character_id) {
@@ -387,16 +388,25 @@ fn list_csv(list: &[(&CharacterInventory, &Purchase)]) -> String {
         }
     }
     for c in chars {
-        let mine = list.iter().filter(|(x, _)| x.character_id == c.character_id).map(|(_, p)| *p);
-        for i in inv::items(mine) {
-            let each = prices.get(&i.type_id).copied();
-            rows.push(vec![
-                c.name.clone(),
-                i.name,
-                i.quantity.to_string(),
-                each.map(|v| format!("{v:.2}")).unwrap_or_default(),
-                each.map(|v| format!("{:.2}", v * i.quantity as f64)).unwrap_or_default(),
-            ]);
+        let mut places: Vec<Option<&StockPlace>> = Vec::new();
+        for (_, p) in list.iter().filter(|(x, _)| x.character_id == c.character_id) {
+            if !places.contains(&p.place.as_ref()) {
+                places.push(p.place.as_ref());
+            }
+        }
+        for place in places {
+            let mine = list.iter().filter(|(x, p)| x.character_id == c.character_id && p.place.as_ref() == place).map(|(_, p)| *p);
+            for i in inv::items(mine) {
+                let each = prices.get(&i.type_id).copied();
+                rows.push(vec![
+                    c.name.clone(),
+                    place.map(|p| p.label()).unwrap_or_else(|| "Anywhere".into()),
+                    i.name,
+                    i.quantity.to_string(),
+                    each.map(|v| format!("{v:.2}")).unwrap_or_default(),
+                    each.map(|v| format!("{:.2}", v * i.quantity as f64)).unwrap_or_default(),
+                ]);
+            }
         }
     }
     csv(&rows)
@@ -442,12 +452,17 @@ struct DoctrineRow {
 }
 
 impl DoctrineRow {
-    fn new(d: &inv::DoctrineLine) -> Self {
+    fn new(d: &inv::DoctrineLine, places: &[StockPlace]) -> Self {
+        let path = d.path.join(" \u{203a} ");
         DoctrineRow {
-            path: d.path.join(" \u{203a} "),
+            path: match places {
+                [] => path,
+                [p] => format!("{path} · at {}", p.label()),
+                list => format!("{path} · at {} places", list.len()),
+            },
             name: d.doctrine.name.clone(),
             fits: d.fits(),
-            flyable: d.flyable.len(),
+            flyable: d.flyable_fits(),
             target: d.target(),
             stock: d.stock(),
             short: d.short(),
@@ -481,6 +496,7 @@ struct FitRow {
     ship_id: i64,
     ship_name: String,
     readiness: Readiness,
+    place: Option<StockPlace>,
     target: u32,
     source: Source,
     fitted: u32,
@@ -500,6 +516,7 @@ impl FitRow {
             ship_id: l.fit.ship_id,
             ship_name: l.fit.ship_name.clone(),
             readiness: l.readiness,
+            place: l.place.clone(),
             target: l.target,
             source,
             fitted: l.fitted,
@@ -571,10 +588,13 @@ fn fit_table(rows: Vec<FitRow>, assets: bool) -> gtk::Widget {
             "Fit",
             |r| {
                 let pill = (r.readiness == Readiness::HullOnly).then(|| w::status("Hull skills only", Status::Neutral));
-                let sub = if r.role.is_empty() { format!("{} · {}", r.ship_name, r.doctrine) } else { format!("{} · {} · {}", r.ship_name, r.role, r.doctrine) };
+                let mut sub = if r.role.is_empty() { format!("{} · {}", r.ship_name, r.doctrine) } else { format!("{} · {} · {}", r.ship_name, r.role, r.doctrine) };
+                if let Some(p) = &r.place {
+                    sub = format!("{sub} · at {}", p.label());
+                }
                 type_cell(&icon_url(r.ship_id, &r.ship_name, false), &r.fit, Some(&sub), pill)
             },
-            |a, b| a.doctrine.cmp(&b.doctrine).then(a.fit.cmp(&b.fit)),
+            |a, b| a.doctrine.cmp(&b.doctrine).then(a.fit.cmp(&b.fit)).then(a.place.as_ref().map(|p| &p.name).cmp(&b.place.as_ref().map(|p| &p.name))),
         )
         .expand()
         .widget_sorted("Target", |r| two_lines(&r.target.to_string(), &targets::source_label(r.source), "dim"), |a, b| a.target.cmp(&b.target));
@@ -616,6 +636,7 @@ struct BuyRow {
     fit: String,
     ship_id: i64,
     ship_name: String,
+    place: Option<StockPlace>,
     quantity: u32,
     cost: Cost,
 }
@@ -630,6 +651,7 @@ impl BuyRow {
             fit: p.fit.name.clone(),
             ship_id: p.fit.ship_id,
             ship_name: p.fit.ship_name.clone(),
+            place: p.place.clone(),
             quantity: p.quantity,
             cost: p.cost.clone(),
         }
@@ -643,7 +665,7 @@ fn buy_table(rows: Vec<BuyRow>, with_character: bool) -> gtk::Widget {
     } else {
         t
     };
-    let cost_col = if with_character { 4 } else { 3 };
+    let cost_col = if with_character { 5 } else { 4 };
     t.widget_sorted(
         "Fit",
         |r| type_cell(&icon_url(r.ship_id, &r.ship_name, false), &r.fit, Some(&r.ship_name), None),
@@ -651,6 +673,7 @@ fn buy_table(rows: Vec<BuyRow>, with_character: bool) -> gtk::Widget {
     )
     .expand()
     .text("Doctrine", |r| if r.wanted_by > 1 { format!("{} (+{} more)", r.doctrine, r.wanted_by - 1) } else { r.doctrine.clone() })
+    .text("Deliver to", |r| r.place.as_ref().map(|p| p.label()).unwrap_or_else(|| "Anywhere".into()))
     .num("Quantity", |r| fmt::int(r.quantity as i64), |r| r.quantity as f64)
     .widget_sorted("Cost", |r| cost_cell(&r.cost, r.quantity), |a, b| (a.cost.isk * a.quantity as f64).total_cmp(&(b.cost.isk * b.quantity as f64)))
     .sort_by(cost_col, true)

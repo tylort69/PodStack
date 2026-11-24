@@ -7,6 +7,10 @@
 //! then everything that character flies; for everyone a fit, then a doctrine, then everything (one of each unless
 //! changed). A target of 0 means the character doesn't stock that fit.
 //!
+//! A doctrine can also name the places its ships must be (a SIG's staging station, or anywhere in a system): then
+//! each fit's target applies at each of those places, and only ships there count. Without places (the default) a
+//! ship anywhere counts.
+//!
 //! Stock is worked out per doctrine: inside one doctrine each ship counts for one fit (a target of two for each of
 //! two Ishtar fits needs four Ishtars), but the same ship counts for every doctrine it fits, since a pilot flies one
 //! doctrine at a time. The shopping list follows that: a hull several doctrines are short of is bought once per
@@ -38,6 +42,8 @@ pub struct OwnedShip {
     pub label: String,
     pub location_id: i64,
     pub location: String,
+    /// The system that location is in (or is), when known.
+    pub system_id: Option<i64>,
     /// The ship or container it's in (a carrier's ship bay, a station container), if any.
     pub inside: Option<String>,
     /// Packaged ships stack and can't have anything fitted.
@@ -65,6 +71,7 @@ pub fn owned_ships(data: &AssetsData) -> Vec<OwnedShip> {
             label: a.label(),
             location_id: a.root_location_id,
             location: data.location_name(a.root_location_id),
+            system_id: data.locations.get(&a.root_location_id).and_then(|p| p.system_id.or((p.kind == "system").then_some(p.id))),
             inside: a.parent_id.and_then(|p| by_id.get(&p)).map(|p| p.label()),
             packaged: !a.is_singleton,
             count: a.count().max(1) as u32,
@@ -218,6 +225,37 @@ pub enum Source {
 pub struct Targets {
     pub everyone: ScopeTargets,
     pub characters: BTreeMap<i64, ScopeTargets>,
+    /// Where each doctrine's ships must be, by doctrine id (none listed: anywhere).
+    pub places: BTreeMap<String, Vec<StockPlace>>,
+}
+
+/// A place a doctrine's ships must be: one station or structure, or anywhere in a system.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct StockPlace {
+    pub id: i64,
+    pub name: String,
+    /// The whole system `id` (else the station or structure `id`).
+    pub system: bool,
+}
+
+impl StockPlace {
+    /// Whether a ship is there.
+    pub fn holds(&self, ship: &OwnedShip) -> bool {
+        if self.system {
+            ship.system_id == Some(self.id) || ship.location_id == self.id
+        } else {
+            ship.location_id == self.id
+        }
+    }
+    /// "Jita IV - Moon 4 - Caldari Navy Assembly Plant", or "anywhere in Jita".
+    pub fn label(&self) -> String {
+        if self.system {
+            format!("anywhere in {}", self.name)
+        } else {
+            self.name.clone()
+        }
+    }
 }
 
 pub fn fit_key(doctrine: &str, fit: &str) -> String {
@@ -277,6 +315,29 @@ impl Targets {
         }
     }
 
+    /// The places a doctrine's ships must be (empty: anywhere).
+    pub fn places(&self, doctrine: &str) -> &[StockPlace] {
+        self.places.get(doctrine).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Adds a place to a doctrine (once).
+    pub fn add_place(&mut self, doctrine: &str, place: StockPlace) {
+        let list = self.places.entry(doctrine.to_string()).or_default();
+        if !list.iter().any(|p| p.id == place.id && p.system == place.system) {
+            list.push(place);
+        }
+    }
+
+    /// Removes a place from a doctrine; with none left its ships count anywhere again.
+    pub fn remove_place(&mut self, doctrine: &str, id: i64, system: bool) {
+        if let Some(list) = self.places.get_mut(doctrine) {
+            list.retain(|p| !(p.id == id && p.system == system));
+            if list.is_empty() {
+                self.places.remove(doctrine);
+            }
+        }
+    }
+
     /// Clears every target set for one character, so it follows everyone's again.
     pub fn clear_character(&mut self, character: i64) {
         self.characters.remove(&character);
@@ -331,6 +392,8 @@ impl Holding {
 pub struct FitLine<'a> {
     pub fit: &'a DoctrineFit,
     pub readiness: Readiness,
+    /// Where these ships must be (None: anywhere).
+    pub place: Option<StockPlace>,
     pub target: u32,
     /// Ships counted fitted as the doctrine, and as hulls.
     pub fitted: u32,
@@ -385,6 +448,12 @@ impl<'a> DoctrineLine<'a> {
     pub fn fits(&self) -> usize {
         self.doctrine.fits.len()
     }
+    /// The fits it can fly (each once, however many places it's stocked at).
+    pub fn flyable_fits(&self) -> usize {
+        let mut ids: Vec<&str> = self.flyable.iter().map(|l| l.fit.id.as_str()).collect();
+        ids.dedup();
+        ids.len()
+    }
     pub fn target(&self) -> u32 {
         self.flyable.iter().map(|l| l.target).sum()
     }
@@ -406,7 +475,9 @@ pub struct Purchase<'a> {
     pub fit: &'a DoctrineFit,
     /// The doctrine this purchase is counted for.
     pub doctrine: &'a Doctrine,
-    /// How many doctrines are short of this hull.
+    /// Where it's wanted (None: anywhere).
+    pub place: Option<StockPlace>,
+    /// How many doctrines are short of this hull (there).
     pub wanted_by: usize,
     pub quantity: u32,
     /// What one costs.
@@ -431,8 +502,9 @@ pub struct CharacterInventory<'a> {
 }
 
 impl CharacterInventory<'_> {
+    /// Doctrine fits it can fly (a fit stocked at several places counts once).
     pub fn flyable(&self) -> usize {
-        self.doctrines.iter().map(|d| d.flyable.len()).sum()
+        self.doctrines.iter().map(|d| d.flyable_fits()).sum()
     }
     pub fn target(&self) -> u32 {
         self.doctrines.iter().map(|d| d.target()).sum()
@@ -480,23 +552,22 @@ pub fn character_inventory<'a>(
     let ships = c.assets.as_ref().map(owned_ships).unwrap_or_default();
     let mut lines = Vec::new();
     for (path, d) in doctrines {
-        let mut flyable: Vec<FitLine<'a>> = d
-            .fits
-            .iter()
-            .filter_map(|f| {
-                let r = doctrines::check(c, f).readiness;
-                let ok = r == Readiness::Ready || opts.hull_only && r == Readiness::HullOnly;
-                ok.then(|| FitLine {
-                    fit: f,
-                    readiness: r,
-                    target: targets.target(c.id, &d.id, &f.id),
-                    fitted: 0,
-                    hulls: 0,
-                    ships: Vec::new(),
-                    cost: fit_cost(f, prices),
-                })
-            })
-            .collect();
+        let places: Vec<Option<StockPlace>> = match targets.places(&d.id) {
+            [] => vec![None],
+            list => list.iter().cloned().map(Some).collect(),
+        };
+        let mut flyable: Vec<FitLine<'a>> = Vec::new();
+        for f in &d.fits {
+            let r = doctrines::check(c, f).readiness;
+            if !(r == Readiness::Ready || opts.hull_only && r == Readiness::HullOnly) {
+                continue;
+            }
+            let target = targets.target(c.id, &d.id, &f.id);
+            let cost = fit_cost(f, prices);
+            for place in &places {
+                flyable.push(FitLine { fit: f, readiness: r, place: place.clone(), target, fitted: 0, hulls: 0, ships: Vec::new(), cost: cost.clone() });
+            }
+        }
         allocate(&mut flyable, &ships);
         lines.push(DoctrineLine { path: path.clone(), doctrine: d, flyable });
     }
@@ -504,59 +575,97 @@ pub fn character_inventory<'a>(
     Some(CharacterInventory { character_id: c.id, name: c.name(), assets_loaded: c.assets.is_some(), doctrines: lines, to_buy })
 }
 
-/// Counts ships toward one doctrine's fits, one ship each, up to each fit's target: first ships fitted as the fit,
-/// then any remaining hull of the type. Fits take turns, so a scarce hull is spread over the fits that want it.
+/// Counts ships toward one doctrine's fits, one ship each, up to each fit's target (at each of its places): first
+/// ships fitted as the fit, then any remaining hull of the type. Lines at one station go before lines anywhere in a
+/// system, and those before lines anywhere at all, so a ship isn't spent on a looser place another line needed.
+/// Fits take turns, so a scarce hull is spread over the fits that want it.
 fn allocate(lines: &mut [FitLine<'_>], ships: &[OwnedShip]) {
+    let tier = |l: &FitLine| match &l.place {
+        Some(p) if !p.system => 0,
+        Some(_) => 1,
+        None => 2,
+    };
     let mut left: Vec<u32> = ships.iter().map(|s| s.count).collect();
     for fitted in [true, false] {
-        loop {
-            let mut any = false;
-            for l in lines.iter_mut().filter(|l| l.stock() < l.target) {
-                let found = ships
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, s)| left[*i] > 0 && s.type_id == l.fit.ship_id)
-                    .filter(|(_, s)| !fitted || fitted_as(s, l.fit))
-                    // the hull pass prefers assembled ships (ready to undock after a refit) over packaged ones
-                    .min_by_key(|(_, s)| s.packaged)
-                    .map(|(i, _)| i);
-                if let Some(i) = found {
-                    left[i] -= 1;
-                    l.count(&ships[i], fitted);
-                    any = true;
-                }
-            }
-            if !any {
-                break;
-            }
+        for t in 0..3 {
+            allocate_round(lines, ships, &mut left, fitted, |l| tier(l) == t);
         }
     }
 }
 
-/// Per hull, the doctrine short of the most of it (the priciest of those on a tie) decides what's bought.
-fn shopping_list<'a>(lines: &[DoctrineLine<'a>]) -> Vec<Purchase<'a>> {
-    // hull → (doctrine index, its fits short of that hull)
-    let mut by_hull: BTreeMap<i64, Vec<(usize, Vec<&FitLine<'a>>)>> = BTreeMap::new();
-    for (i, d) in lines.iter().enumerate() {
-        let mut per: BTreeMap<i64, Vec<&FitLine<'a>>> = BTreeMap::new();
-        for l in d.flyable.iter().filter(|l| l.short() > 0) {
-            per.entry(l.fit.ship_id).or_default().push(l);
+fn allocate_round(lines: &mut [FitLine<'_>], ships: &[OwnedShip], left: &mut [u32], fitted: bool, these: impl Fn(&FitLine) -> bool) {
+    loop {
+        let mut any = false;
+        for l in lines.iter_mut().filter(|l| these(l) && l.stock() < l.target) {
+            let found = ships
+                .iter()
+                .enumerate()
+                .filter(|(i, s)| left[*i] > 0 && s.type_id == l.fit.ship_id)
+                .filter(|(_, s)| l.place.as_ref().is_none_or(|p| p.holds(s)))
+                .filter(|(_, s)| !fitted || fitted_as(s, l.fit))
+                // the hull pass prefers assembled ships (ready to undock after a refit) over packaged ones
+                .min_by_key(|(_, s)| s.packaged)
+                .map(|(i, _)| i);
+            if let Some(i) = found {
+                left[i] -= 1;
+                l.count(&ships[i], fitted);
+                any = true;
+            }
         }
-        for (hull, fits) in per {
-            by_hull.entry(hull).or_default().push((i, fits));
+        if !any {
+            break;
         }
     }
-    let mut out = Vec::new();
-    for wants in by_hull.into_values() {
-        let units = |f: &[&FitLine]| f.iter().map(|l| l.short()).sum::<u32>();
-        let isk = |f: &[&FitLine]| f.iter().map(|l| l.cost.isk * l.short() as f64).sum::<f64>();
-        let Some((i, fits)) =
-            wants.iter().max_by(|a, b| units(&a.1).cmp(&units(&b.1)).then(isk(&a.1).total_cmp(&isk(&b.1))).then(b.0.cmp(&a.0)))
-        else {
-            continue;
-        };
-        for l in fits {
-            out.push(Purchase { fit: l.fit, doctrine: lines[*i].doctrine, wanted_by: wants.len(), quantity: l.short(), cost: l.cost.clone() });
+}
+
+/// Per hull and place, the doctrine short of the most of it (the priciest of those on a tie) decides what's bought
+/// there. Ships bought for a place also count toward doctrines that take the hull anywhere, so those buy only what's
+/// still missing after that.
+fn shopping_list<'a>(lines: &[DoctrineLine<'a>]) -> Vec<Purchase<'a>> {
+    type Key = (i64, Option<(bool, i64)>);
+    let key = |l: &FitLine| (l.fit.ship_id, l.place.as_ref().map(|p| (p.system, p.id)));
+    // (hull, place) → (doctrine index, its fits short of that hull there); places before anywhere (None sorts first,
+    // so anywhere is handled in a second pass)
+    let mut by_key: BTreeMap<Key, Vec<(usize, Vec<&FitLine<'a>>)>> = BTreeMap::new();
+    for (i, d) in lines.iter().enumerate() {
+        let mut per: BTreeMap<Key, Vec<&FitLine<'a>>> = BTreeMap::new();
+        for l in d.flyable.iter().filter(|l| l.short() > 0) {
+            per.entry(key(l)).or_default().push(l);
+        }
+        for (k, fits) in per {
+            by_key.entry(k).or_default().push((i, fits));
+        }
+    }
+    let units = |f: &[&FitLine]| f.iter().map(|l| l.short()).sum::<u32>();
+    let isk = |f: &[&FitLine]| f.iter().map(|l| l.cost.isk * l.short() as f64).sum::<f64>();
+    let mut out: Vec<Purchase<'a>> = Vec::new();
+    let mut at_places: HashMap<i64, u32> = HashMap::new();
+    for anywhere in [false, true] {
+        for ((hull, place), wants) in by_key.iter().filter(|(k, _)| k.1.is_none() == anywhere) {
+            let Some((i, fits)) =
+                wants.iter().max_by(|a, b| units(&a.1).cmp(&units(&b.1)).then(isk(&a.1).total_cmp(&isk(&b.1))).then(b.0.cmp(&a.0)))
+            else {
+                continue;
+            };
+            let mut covered = if anywhere { at_places.get(hull).copied().unwrap_or(0) } else { 0 };
+            for l in fits {
+                let n = l.short().saturating_sub(covered);
+                covered = covered.saturating_sub(l.short());
+                if n == 0 {
+                    continue;
+                }
+                if place.is_some() {
+                    *at_places.entry(*hull).or_default() += n;
+                }
+                out.push(Purchase {
+                    fit: l.fit,
+                    doctrine: lines[*i].doctrine,
+                    place: l.place.clone(),
+                    wanted_by: wants.len(),
+                    quantity: n,
+                    cost: l.cost.clone(),
+                });
+            }
         }
     }
     out
@@ -942,6 +1051,68 @@ mod tests {
         // ships first: 4 Rifters (2 each), 3 Slashers (2 + 1); then two disruptors and 100 charges per Rifter
         assert_eq!(got, [("Rifter", 4), ("Slasher", 3), ("EMP S", 400), ("Warp Disruptor II", 4)]);
         assert_eq!(multibuy(&all[..2]), "Rifter x4\nSlasher x3\n");
+    }
+
+    #[test]
+    fn places_count_only_ships_there() {
+        const AMARR: i64 = 60008494;
+        const JITA_SYSTEM: i64 = 30000142;
+        const PERIMETER_IHUB: i64 = 1_000_000_000_001;
+        let d = doctrine("d", vec![fit("a", RIFTER, None)]);
+        let docs = vec![(vec!["SIG"], &d)];
+        let mut t = Targets::default();
+        let station = |id: i64, name: &str| StockPlace { id, name: name.into(), system: false };
+        t.add_place("d", station(JITA, "Jita IV - Moon 4"));
+        t.add_place("d", StockPlace { id: JITA_SYSTEM, name: "Jita".into(), system: true });
+        t.add_place("d", station(JITA, "Jita IV - Moon 4"));
+        assert_eq!(t.places("d").len(), 2, "added once");
+        // a Rifter at the Jita station, one at a structure elsewhere in Jita, one in Amarr
+        let mut c = Character::new(1);
+        c.skills = pilot(1, 1, None).skills.clone();
+        let mut data = AssetsData {
+            items: vec![
+                asset(1, RIFTER, None, "Hangar", true, 1),
+                Asset { root_location_id: PERIMETER_IHUB, ..asset(2, RIFTER, None, "Hangar", true, 1) },
+                Asset { root_location_id: AMARR, ..asset(3, RIFTER, None, "Hangar", true, 1) },
+            ],
+            ..Default::default()
+        };
+        data.locations.insert(JITA, Place { id: JITA, name: "Jita IV - Moon 4".into(), system_id: Some(JITA_SYSTEM), ..Default::default() });
+        data.locations.insert(PERIMETER_IHUB, Place { id: PERIMETER_IHUB, name: "Jita - Keepstar".into(), system_id: Some(JITA_SYSTEM), ..Default::default() });
+        data.locations.insert(AMARR, Place { id: AMARR, name: "Amarr VIII".into(), system_id: Some(30002187), ..Default::default() });
+        c.assets = Some(data);
+        let target = |n| {
+            let mut t = t.clone();
+            t.set(None, None, None, Some(n));
+            t
+        };
+
+        // one at each place: the station takes its own Rifter first, the system the Keepstar one; Amarr's counts nowhere
+        let inv = character_inventory(&c, &docs, &target(1), &prices(), Options { hull_only: false }).unwrap();
+        let l = &inv.doctrines[0].flyable;
+        assert_eq!(l.iter().map(|l| (l.place.as_ref().unwrap().system, l.stock())).collect::<Vec<_>>(), [(false, 1), (true, 1)]);
+        assert_eq!(l[0].ships[0].item_id, 1);
+        assert_eq!(l[1].ships[0].item_id, 2);
+        assert!(inv.to_buy.is_empty());
+
+        // two at each: one more for each place, bought for that place
+        let inv = character_inventory(&c, &docs, &target(2), &prices(), Options { hull_only: false }).unwrap();
+        let bought: Vec<(String, u32)> = inv.to_buy.iter().map(|p| (p.place.as_ref().unwrap().label(), p.quantity)).collect();
+        assert_eq!(bought, [("Jita IV - Moon 4".to_string(), 1), ("anywhere in Jita".to_string(), 1)]);
+
+        // another doctrine taking Rifters anywhere: three owned already cover it
+        let any = doctrine("any", vec![fit("b", RIFTER, None)]);
+        let docs2 = vec![(vec!["SIG"], &d), (vec!["Main"], &any)];
+        let inv = character_inventory(&c, &docs2, &target(2), &prices(), Options { hull_only: false }).unwrap();
+        assert_eq!(inv.to_buy.len(), 2, "only the places' shortfall");
+        // with none owned, the place purchases cover the anywhere doctrine too
+        c.assets = Some(AssetsData::default());
+        let inv = character_inventory(&c, &docs2, &target(2), &prices(), Options { hull_only: false }).unwrap();
+        assert_eq!(inv.ships_to_buy(), 4, "2 at the station and 2 in the system, which also stock the other doctrine");
+
+        t.remove_place("d", JITA, false);
+        t.remove_place("d", JITA_SYSTEM, true);
+        assert!(t.places.is_empty());
     }
 
     #[test]
