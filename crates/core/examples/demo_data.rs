@@ -452,9 +452,15 @@ fn add_assets(dir: &std::path::Path, doc: &DoctrineDoc, places: &[Place]) {
             }
             // a ship fitted otherwise keeps only its first module
             let rest = fit.items.iter().skip(1).take(if *how == 'o' { 1 } else { usize::MAX });
-            for (slot, i) in rest.enumerate() {
+            let mut used: BTreeMap<&str, usize> = BTreeMap::new();
+            for i in rest {
                 let flag = match i.category.as_str() {
-                    "Module" | "Subsystem" => format!("LoSlot{slot}"),
+                    "Module" | "Subsystem" => {
+                        let rack = slot_rack(&i.name);
+                        let n = used.entry(rack).or_default();
+                        *n += 1;
+                        format!("{rack}{}", *n - 1)
+                    }
                     "Drone" => "DroneBay".into(),
                     _ => "Cargo".into(),
                 };
@@ -780,4 +786,20 @@ async fn main() {
     add_accounts(&dir);
     core.universe.flush();
     println!("demo data written to {} ({} contracts, {} doctrine fits)", dir.display(), archive.contracts.len(), doc.fit_count());
+}
+
+/// The rack a module goes in, guessed from its name: the demo's fits carry no slot data, and the assets view sorts
+/// and labels fitted modules by rack.
+fn slot_rack(name: &str) -> &'static str {
+    let n = name.to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
+    if has(&["trimark", "pump", "purger", "rigor", "flare", "field extender", "core defense", "auxiliary nano", "ancillary current router", "polycarbon", "hyperspatial", "burst aerator", "collision accelerator", "metastasis", "semiconductor memory", "energy discharge", "anti-"]) {
+        "RigSlot"
+    } else if has(&["laser", "blaster", "railgun", "autocannon", "artillery", "launcher", "neutralizer", "nosferatu", "remote", "smartbomb", "cloak", "salvager", "tractor", "cyno", "probe launcher", "cannon", "beam", "pulse", "doomsday"]) {
+        "HiSlot"
+    } else if has(&["shield extender", "shield booster", "shield hardener", "invulnerability", "multispectrum shield", "warp disruptor", "warp scrambler", "stasis", "webifier", "afterburner", "microwarpdrive", "capacitor booster", "cap booster", "sensor booster", "tracking computer", "target painter", "ecm", "sensor dampener", "weapon disruptor", "heavy capacitor booster", "propulsion"]) {
+        "MedSlot"
+    } else {
+        "LoSlot"
+    }
 }

@@ -48,6 +48,9 @@ contracts over the last six months.
 
 - **Overview** of every character: Alpha/Omega, corporation and alliance, wallet, skill points, the skill in
   training and time left.
+- **Your own order in the sidebar.** Drag characters to reorder them, and sort them into folders and subfolders
+  (by account, by corporation, by role: fleet, capitals, industry, scouts…), collapsed or open as you like. "Group
+  by account" and "Group by corporation" fill the folders for you to start from.
 - **Character pages** with summary, skills, skill plans, clones and implants, mail, wallet (journal, transactions
   and balance chart), market orders, contracts, assets, industry, research agents, planets, notifications,
   calendar, standings, contacts, kill log, medals and ESI scope health.
@@ -58,6 +61,20 @@ contracts over the last six months.
   glance.
 - **SP farming**: farms, injectors ready, time to the next one, and ISK per farm per month after fees, extractors
   and Omega or MCT costs.
+
+### Wallet
+
+- **Every wallet together**: combined balance, income, spending and net for the last 7, 30 or 90 days or all of
+  it, per day on a chart.
+- **Where the ISK comes from**: ratting (bounties and ESS), missions, market sales split into ore and minerals,
+  planetary materials and other goods, contracts, skill injectors, insurance and more.
+- **Where it goes**: market purchases, taxes and broker fees, industry jobs, PLEX, skills and clones, and the
+  rest.
+- **Top earning activities** after each activity's own costs, so you can see whether ratting, mining, trading or
+  SP farming actually pays, and a per-character table of who earns what and how. Every category opens the journal
+  entries behind it.
+
+<img src="docs/screenshots/wallet.png" width="100%" alt="The wallet across all characters, with income by source">
 
 ### Doctrines
 
@@ -113,8 +130,11 @@ From a first frigate to alliance capital programs.
 - **Blueprints** you own, and every blueprint in the game.
 - **Calculator**: materials, time and job cost for any manufacturing, reaction, invention or research job, with
   the system's cost index, structure and rig bonuses, facility tax and decryptors.
-- **Planner**: build anything (a shopping list, a fit, a fleet of titans) down to raw materials, with every
-  reaction, component, invention and purchase, split into jobs across your characters' slots.
+- **Planner**: build anything (a shopping list, a fit, a fleet of titans) from the ground up: every component
+  that has a blueprint and every reaction under it, down to raw materials. Each job is costed the way the game
+  does it (materials rounded per job, estimated item value, the system cost index, facility tax and the SCC
+  surcharge), with a build tree, a table of every job, a shopping list, and a build time scheduled across the job
+  slots of the characters you pick.
 - **Facilities** with your structures and rigs, and **Systems** to find the cheapest place to build.
 
 <img src="docs/screenshots/industry.png" width="100%" alt="The industry calculator">
@@ -130,7 +150,12 @@ From a first frigate to alliance capital programs.
 
 ### Everything else
 
+- **Assets** per character, as a flat list or with **ships as containers**: fitted modules, drones and cargo sit
+  under their ship, and the ship's value includes everything in it.
 - **Asset search** across all characters, with estimated values.
+- **Doctrine ships**: for every character and doctrine, which fits they can fly, which of those they own a ship
+  for (and where), and what the missing ones cost at Jita, per doctrine, per character, per account and overall,
+  with a shopping list.
 - **Alerts on your desktop and on Discord**: training stopped or running low, lapsed to Alpha, injector ready,
   contract completed or assigned to you, courier due soon, new mail, jump fatigue ended, industry job ready, PI
   extractor stopped, market order finished, new notifications, calendar events, a login that stopped working, and
@@ -152,6 +177,10 @@ From a first frigate to alliance capital programs.
 | Contracts: courier history | Planetary industry: production chains |
 | <img src="docs/screenshots/market.png" alt="The market browser"> | <img src="docs/screenshots/industry.png" alt="The industry calculator"> |
 | Market browser | Industry: a Tech II build with invention |
+| <img src="docs/screenshots/planner.png" alt="The industry planner building a titan"> | <img src="docs/screenshots/doctrine-ships.png" alt="Doctrine ships owned and missing"> |
+| Industry planner: a titan from the ground up | Asset search: doctrine ships owned, missing and their cost |
+| <img src="docs/screenshots/assets.png" alt="Assets with ships as containers"> | <img src="docs/screenshots/wallet.png" alt="The wallet across all characters"> |
+| Assets: ships as containers | Wallet: income and spending across characters |
 
 ## Install
 
