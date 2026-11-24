@@ -19,7 +19,8 @@ use podstack_core::features::contracts::csv;
 use podstack_core::features::doctrine_inventory::{self as inv, Basis, CharacterInventory, Cost, Holding, Options, OwnedShip, Purchase, Source, StockPlace, Targets};
 use podstack_core::features::doctrines::{self as dc, Readiness};
 use podstack_core::{config, fmt};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::collections::{HashMap, HashSet};
 
 const GROUP_KEY: &str = "doctrines.stock.group";
@@ -31,6 +32,7 @@ const LIST_OFF_KEY: &str = "doctrines.stock.list_off";
 const CSS: &str = "
 .dsi-account-head { margin-top: 8px; }
 .dsi-char-head { padding-bottom: 4px; }
+.dsi-pick-account label { font-weight: 600; }
 ";
 
 thread_local! {
@@ -156,7 +158,20 @@ pub fn build(ctx: &Ctx) -> Page {
         &["body-small", "dim"],
     ));
 
+    // the combined list comes before the characters: with many of them it would be far down the page
+    if groups.iter().flat_map(|g| &g.characters).any(|c| !c.to_buy.is_empty()) {
+        body.append(&all_list_card(ctx, &groups));
+    }
+
+    // without any accounts set, everyone is in one "No account" group: no heading for that
+    let headings = groups.iter().any(|g| g.account.is_some());
     for g in &groups {
+        if !headings {
+            for c in &g.characters {
+                body.append(&character_card(ctx, c, &targets, group.as_deref(), loading));
+            }
+            continue;
+        }
         let head = w::hbox(12);
         head.add_css_class("dsi-account-head");
         head.append(&w::icon(if g.account.is_some() { "group" } else { "person_off" }));
@@ -172,76 +187,30 @@ pub fn build(ctx: &Ctx) -> Page {
         }
     }
 
-    let buyers: Vec<&CharacterInventory> = groups.iter().flat_map(|g| &g.characters).filter(|c| !c.to_buy.is_empty()).collect();
-    if !buyers.is_empty() {
-        body.append(&all_list_card(ctx, &buyers));
-    }
     Page::new("Doctrines", body)
 }
 
-/// The shopping list for the characters picked with the chips above it (all of them unless some are toggled off).
-fn all_list_card(ctx: &Ctx, buyers: &[&CharacterInventory]) -> gtk::Widget {
-    let off: HashSet<i64> = ctx.recall(LIST_OFF_KEY).unwrap_or_default().split(',').filter_map(|v| v.parse().ok()).collect();
+fn list_off(ctx: &Ctx) -> HashSet<i64> {
+    ctx.recall(LIST_OFF_KEY).unwrap_or_default().split(',').filter_map(|v| v.parse().ok()).collect()
+}
+
+fn save_list_off(ctx: &Ctx, off: &HashSet<i64>) {
+    let mut ids: Vec<i64> = off.iter().copied().collect();
+    ids.sort();
+    ctx.remember(LIST_OFF_KEY, ids.iter().map(i64::to_string).collect::<Vec<_>>().join(","));
+}
+
+/// The shopping list for the characters picked in the Characters menu (all of them unless some are left out).
+fn all_list_card(ctx: &Ctx, groups: &[inv::AccountInventory]) -> gtk::Widget {
+    let off = list_off(ctx);
+    let buyers: Vec<&CharacterInventory> = groups.iter().flat_map(|g| &g.characters).filter(|c| !c.to_buy.is_empty()).collect();
     let picked: Vec<&CharacterInventory> = buyers.iter().copied().filter(|c| !off.contains(&c.character_id)).collect();
-    let save_off = |ctx: &Ctx, off: &HashSet<i64>| {
-        let mut ids: Vec<i64> = off.iter().copied().collect();
-        ids.sort();
-        ctx.remember(LIST_OFF_KEY, ids.iter().map(i64::to_string).collect::<Vec<_>>().join(","));
-        ctx.rebuild();
-    };
 
     let content = w::vbox(12);
-    let pick = w::hbox(8);
-    pick.append(&w::line("Characters", &["label-large", "dim"]));
-    let all_ids: Vec<i64> = buyers.iter().map(|c| c.character_id).collect();
-    let everyone = w::button("All", Btn::Text);
-    everyone.set_sensitive(picked.len() != buyers.len());
-    let (c, ids) = (ctx.clone(), all_ids.clone());
-    everyone.connect_clicked(move |_| {
-        // keep characters that have nothing to buy right now as they were
-        let mut off: HashSet<i64> = c.recall(LIST_OFF_KEY).unwrap_or_default().split(',').filter_map(|v| v.parse().ok()).collect();
-        off.retain(|id| !ids.contains(id));
-        save_off(&c, &off);
-    });
-    pick.append(&everyone);
-    let nobody = w::button("None", Btn::Text);
-    nobody.set_sensitive(!picked.is_empty());
-    let (c, ids) = (ctx.clone(), all_ids);
-    nobody.connect_clicked(move |_| {
-        let mut off: HashSet<i64> = c.recall(LIST_OFF_KEY).unwrap_or_default().split(',').filter_map(|v| v.parse().ok()).collect();
-        off.extend(ids.iter().copied());
-        save_off(&c, &off);
-    });
-    pick.append(&nobody);
-    content.append(&pick);
-
-    let chips = gtk::FlowBox::new();
-    chips.set_selection_mode(gtk::SelectionMode::None);
-    chips.set_column_spacing(8);
-    chips.set_row_spacing(8);
-    chips.set_max_children_per_line(30);
-    for b in buyers {
-        let on = !off.contains(&b.character_id);
-        let chip = w::chip(&format!("{} ({})", b.name, b.ships_to_buy()), on);
-        chip.set_tooltip_text(Some(&format!("{} ships for {} ISK", b.ships_to_buy(), fmt::isk_short(b.cost()))));
-        let (c, id) = (ctx.clone(), b.character_id);
-        chip.connect_toggled(move |t| {
-            let mut off: HashSet<i64> = c.recall(LIST_OFF_KEY).unwrap_or_default().split(',').filter_map(|v| v.parse().ok()).collect();
-            if t.is_active() {
-                off.remove(&id);
-            } else {
-                off.insert(id);
-            }
-            save_off(&c, &off);
-        });
-        chips.append(&chip);
-    }
-    content.append(&chips);
-
     let list: Vec<(&CharacterInventory, &Purchase)> = picked.iter().flat_map(|c| c.to_buy.iter().map(move |p| (*c, p))).collect();
-    let (title, subtitle, actions) = if list.is_empty() {
-        content.append(&w::text("Pick one or more characters to see what they need to buy.", &["body-medium", "dim"]));
-        ("Shopping list".to_string(), "No characters picked".to_string(), Vec::new())
+    let (title, subtitle, mut actions) = if list.is_empty() {
+        content.append(&w::empty_state("person_search", "No characters picked", "Pick characters in the Characters menu to see what they need to buy."));
+        ("Shopping list".to_string(), format!("None of the {} characters with ships to buy", buyers.len()), Vec::new())
     } else {
         let ships: u32 = picked.iter().map(|c| c.ships_to_buy()).sum();
         let cost: f64 = picked.iter().map(|c| c.cost()).sum();
@@ -250,14 +219,199 @@ fn all_list_card(ctx: &Ctx, buyers: &[&CharacterInventory]) -> gtk::Widget {
         } else if picked.len() == 1 {
             (format!("Shopping list: {}", picked[0].name), picked[0].name.clone())
         } else {
-            (format!("Shopping list: {} characters", picked.len()), format!("{} characters", picked.len()))
+            (format!("Shopping list: {} of {} characters", picked.len(), buyers.len()), format!("{} characters", picked.len()))
         };
         let rows: Vec<BuyRow> = list.iter().map(|(c, p)| BuyRow::new(c, p)).collect();
         content.append(&buy_table(rows, true));
         let actions = list_actions(ctx, &list, &who);
         (title, format!("{ships} ships for {} ISK at Jita: what these characters need to reach their stock targets", fmt::isk_short(cost)), actions)
     };
+    actions.insert(0, character_picker(ctx, groups, &off, picked.len(), buyers.len()).upcast());
     w::card_with(&title, Some(&subtitle), &actions, &content).upcast()
+}
+
+/// A menu of the characters with ships to buy, by account, with a search: built to stay usable with a hundred of
+/// them. Ticks are applied when the menu closes, so the page rebuilds once rather than on every click.
+fn character_picker(ctx: &Ctx, groups: &[inv::AccountInventory], off: &HashSet<i64>, picked: usize, total: usize) -> gtk::MenuButton {
+    let label = if picked == total { format!("All {total} characters") } else { format!("{picked} of {total} characters") };
+    let mb = gtk::MenuButton::new();
+    let inner = w::hbox(8);
+    inner.append(&w::icon("group"));
+    inner.append(&gtk::Label::new(Some(&label)));
+    inner.append(&w::icon("arrow_drop_down"));
+    mb.set_child(Some(&inner));
+    mb.set_valign(gtk::Align::Center);
+    mb.set_tooltip_text(Some("Which characters' ships this list covers"));
+
+    let state = Rc::new(RefCell::new(off.clone()));
+    let changed = Rc::new(Cell::new(false));
+    // set while code (not the user) changes ticks, so the handlers don't act on their own changes
+    let syncing = Rc::new(Cell::new(false));
+
+    let pop = gtk::Popover::new();
+    let bx = w::vbox(8);
+    bx.set_width_request(420);
+    bx.set_margin_start(8);
+    bx.set_margin_end(8);
+    bx.set_margin_top(8);
+    bx.set_margin_bottom(8);
+    let search = w::search_entry("Search characters or accounts");
+    bx.append(&search);
+    let bulk = w::hbox(4);
+    let all = w::button("Tick shown", Btn::Text);
+    all.set_tooltip_text(Some("Tick every character shown (all of them, or the ones the search finds)"));
+    let none = w::button("Untick shown", Btn::Text);
+    none.set_tooltip_text(Some("Untick every character shown"));
+    bulk.append(&all);
+    bulk.append(&none);
+    bx.append(&bulk);
+
+    // per account: its check, and its characters' checks with their ids and names (with no accounts set, one
+    // group without a heading)
+    let headings = groups.iter().any(|g| g.account.is_some());
+    type Row = (i64, String, gtk::CheckButton, gtk::Box);
+    type Section = (String, gtk::CheckButton, gtk::Box, Vec<Row>);
+    let sections: Rc<Vec<Section>> = Rc::new(
+        groups
+            .iter()
+            .filter(|g| g.characters.iter().any(|c| !c.to_buy.is_empty()))
+            .map(|g| {
+                let section = w::vbox(0);
+                let head = gtk::CheckButton::with_label(&g.name);
+                head.add_css_class("dsi-pick-account");
+                section.append(&head);
+                head.set_visible(headings);
+                let rows: Vec<Row> = g
+                    .characters
+                    .iter()
+                    .filter(|c| !c.to_buy.is_empty())
+                    .map(|c| {
+                        let row = w::hbox(8);
+                        row.set_margin_start(if headings { 24 } else { 0 });
+                        // room for the overlay scrollbar
+                        row.set_margin_end(12);
+                        let cb = gtk::CheckButton::with_label(&c.name);
+                        cb.set_hexpand(true);
+                        cb.set_active(!off.contains(&c.character_id));
+                        row.append(&cb);
+                        let n = c.ships_to_buy();
+                        row.append(&w::line(&format!("{n} ship{} · {} ISK", if n == 1 { "" } else { "s" }, fmt::isk_short(c.cost())), &["body-small", "dim"]));
+                        section.append(&row);
+                        (c.character_id, c.name.to_lowercase(), cb, row)
+                    })
+                    .collect();
+                (g.name.to_lowercase(), head, section, rows)
+            })
+            .collect(),
+    );
+    let sync_heads = {
+        let (sections, syncing) = (sections.clone(), syncing.clone());
+        move || {
+            syncing.set(true);
+            for (_, head, _, rows) in sections.iter() {
+                let on = rows.iter().filter(|r| r.2.is_active()).count();
+                head.set_active(on == rows.len());
+                head.set_inconsistent(on > 0 && on < rows.len());
+            }
+            syncing.set(false);
+        }
+    };
+    sync_heads();
+    let set = {
+        let (state, changed) = (state.clone(), changed.clone());
+        move |id: i64, on: bool| {
+            let mut s = state.borrow_mut();
+            let was = s.contains(&id);
+            if on {
+                s.remove(&id);
+            } else {
+                s.insert(id);
+            }
+            if was != s.contains(&id) {
+                changed.set(true);
+            }
+        }
+    };
+    let list = w::vbox(4);
+    for (_, head, section, rows) in sections.iter() {
+        list.append(section);
+        for (id, _, cb, _) in rows {
+            let (set, sync_heads, syncing, id) = (set.clone(), sync_heads.clone(), syncing.clone(), *id);
+            cb.connect_toggled(move |cb| {
+                if !syncing.get() {
+                    set(id, cb.is_active());
+                    sync_heads();
+                }
+            });
+        }
+        // the account's check ticks or unticks its characters that are shown
+        let (rows2, set, sync_heads, syncing) = (rows.iter().map(|r| (r.0, r.2.clone(), r.3.clone())).collect::<Vec<_>>(), set.clone(), sync_heads.clone(), syncing.clone());
+        head.connect_toggled(move |h| {
+            if syncing.get() {
+                return;
+            }
+            let on = h.is_active() || h.is_inconsistent();
+            syncing.set(true);
+            for (id, cb, row) in &rows2 {
+                if row.is_visible() {
+                    cb.set_active(on);
+                    set(*id, on);
+                }
+            }
+            syncing.set(false);
+            sync_heads();
+        });
+    }
+    let scroll = gtk::ScrolledWindow::new();
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroll.set_propagate_natural_height(true);
+    scroll.set_max_content_height(360);
+    scroll.set_child(Some(&list));
+    bx.append(&scroll);
+
+    for (button, on) in [(all, true), (none, false)] {
+        let (sections, set, sync_heads, syncing) = (sections.clone(), set.clone(), sync_heads.clone(), syncing.clone());
+        button.connect_clicked(move |_| {
+            syncing.set(true);
+            for (_, _, _, rows) in sections.iter() {
+                for (id, _, cb, row) in rows {
+                    if row.is_visible() {
+                        cb.set_active(on);
+                        set(*id, on);
+                    }
+                }
+            }
+            syncing.set(false);
+            sync_heads();
+        });
+    }
+    {
+        let sections = sections.clone();
+        search.connect_search_changed(move |e| {
+            let q = e.text().to_lowercase();
+            for (account, _, section, rows) in sections.iter() {
+                // an account whose name matches shows all its characters
+                let whole = account.contains(q.as_str());
+                let mut any = false;
+                for (_, name, _, row) in rows {
+                    let show = whole || name.contains(q.as_str());
+                    row.set_visible(show);
+                    any |= show;
+                }
+                section.set_visible(any);
+            }
+        });
+    }
+    pop.set_child(Some(&bx));
+    let c = ctx.clone();
+    pop.connect_closed(move |_| {
+        if changed.replace(false) {
+            save_list_off(&c, &state.borrow());
+            c.rebuild();
+        }
+    });
+    mb.set_popover(Some(&pop));
+    mb
 }
 
 fn toolbar(ctx: &Ctx, doc: &dc::DoctrineDoc, group: Option<&str>, hull_only: bool) -> gtk::Widget {
