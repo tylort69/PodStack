@@ -22,6 +22,7 @@ pub mod static_data;
 pub mod store;
 pub mod training;
 pub mod universe;
+pub mod zkill;
 
 pub use character::Character;
 

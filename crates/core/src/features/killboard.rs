@@ -4,6 +4,11 @@
 //! attackers) in an archive (`killmail_archive.json`) that grows from the first refresh on. Each mail is valued once,
 //! when it's archived, at CCP's average prices of that day ([`value`]), so old fights don't move with today's market.
 //!
+//! ESI only lists a character's losses and the kills where it landed the final blow (the game hands a mail to no
+//! one else), so unless the user turns it off, the archive also takes each character's mails from zKillboard
+//! ([`from_zkill`]): the kills it only took part in, and its history from before PodStack. A mail is archived once
+//! by id, whichever source finds it first.
+//!
 //! [`entries`] turns the archive into what each mail meant for the user: a kill (one of their characters is among
 //! the attackers) or a loss (one of them is the victim). A mail several of the user's characters were on is one
 //! entry listing all of them, so totals count it once. [`analyze`] adds those entries up for a period: headline
@@ -12,6 +17,7 @@
 use crate::domains::Cx;
 use crate::features::wallet_flow::{self, BucketSize};
 use crate::sde::{MAP, MARKET, SHIPS};
+use crate::zkill::{self, PageError, ZkillMail};
 use crate::{store, Core, Event};
 use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -204,7 +210,7 @@ pub struct ArchivedKill {
     pub region_id: Option<i64>,
     #[serde(default)]
     pub region: Option<String>,
-    /// The user's characters whose recent killmails listed it.
+    /// The user's characters whose killmail lists (ESI's or zKillboard's) showed it.
     #[serde(default)]
     pub seen_by: BTreeSet<i64>,
     pub first_seen: DateTime<Utc>,
@@ -233,6 +239,22 @@ pub struct Archive {
     /// Names of the pilots, corporations, alliances, factions, types and systems the mails show.
     #[serde(default)]
     pub names: BTreeMap<i64, String>,
+    /// How far each character's zKillboard history has been read.
+    #[serde(default)]
+    pub zkill: BTreeMap<i64, ZkillProgress>,
+}
+
+/// A character's walk through its zKillboard history: page by page back to its oldest mail once, then only the
+/// newest page (and more while every mail on it is new).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ZkillProgress {
+    /// The whole history has been read.
+    #[serde(default)]
+    pub backfilled: bool,
+    /// While backfilling, the page to read next (pages only shift older as new mails come in, so resuming there can
+    /// only repeat a few mails, never skip any).
+    #[serde(default)]
+    pub next_page: u32,
 }
 
 impl Archive {
@@ -290,6 +312,18 @@ pub fn archive(core: &Core, character: i64, listed: &[i64], new: Vec<ArchivedKil
     }
 }
 
+/// Remembers how far a character's zKillboard history has been read.
+pub fn set_zkill_progress(core: &Core, character: i64, p: ZkillProgress) {
+    let _guard = WRITE.lock().unwrap();
+    let mut a = (*archive_snapshot()).clone();
+    if a.zkill.get(&character) != Some(&p) {
+        a.zkill.insert(character, p);
+        store::save_doc(DOC, &a);
+        *ARCHIVE.write().unwrap() = Some(Arc::new(a));
+        core.emit(Event::Doc(DOC.into()));
+    }
+}
+
 /// [`archive`]'s merge; whether anything changed. A mail already archived is kept as it is (killmails never
 /// change), only who saw it grows.
 fn merge(a: &mut Archive, character: i64, listed: &[i64], new: Vec<ArchivedKill>, names: HashMap<i64, String>) -> bool {
@@ -320,14 +354,25 @@ pub const FETCH_BATCH: usize = 200;
 
 /// Fetches, places and values the mails `wanted` ((id, hash), newest first) the archive doesn't have yet.
 pub async fn fetch_new(cx: &Cx, wanted: &[(i64, String)]) -> (Vec<ArchivedKill>, HashMap<i64, String>) {
-    let fetched: Vec<(EsiKillmail, String)> =
-        futures::future::join_all(wanted.iter().map(|(id, hash)| async move {
+    let fetched = fetch_esi(cx, wanted).await;
+    place(cx, fetched).await
+}
+
+/// The mails from ESI, by id and hash; ones that fail are left out (the next refresh asks again).
+async fn fetch_esi(cx: &Cx, wanted: &[(i64, String)]) -> Vec<(EsiKillmail, String)> {
+    futures::future::join_all(
+        wanted.iter().map(|(id, hash)| async move {
             cx.esi().get(format!("killmails/{id}/{hash}")).json::<EsiKillmail>().await.ok().map(|m| (m, hash.clone()))
-        }))
-        .await
-        .into_iter()
-        .flatten()
-        .collect();
+        }),
+    )
+    .await
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Names, places and values fetched mails for the archive.
+async fn place(cx: &Cx, fetched: Vec<(EsiKillmail, String)>) -> (Vec<ArchivedKill>, HashMap<i64, String>) {
     if fetched.is_empty() {
         return (Vec::new(), HashMap::new());
     }
@@ -365,6 +410,110 @@ pub async fn fetch_new(cx: &Cx, wanted: &[(i64, String)]) -> (Vec<ArchivedKill>,
         })
         .collect();
     (kills, names)
+}
+
+// ---------- zKillboard ----------
+
+/// The setting that turns zKillboard off (it's on unless set to false).
+pub const ZKILL_SETTING: &str = "killboard.zkillboard";
+
+pub fn zkill_enabled(core: &Core) -> bool {
+    core.setting::<Option<bool>>(ZKILL_SETTING).unwrap_or(true)
+}
+
+/// How many zKillboard pages one character's refresh reads at most: a long history comes in over a few hours.
+pub const ZKILL_PAGES: u32 = 10;
+
+/// Whether to read the next older page after one of `len` mails: never after a short (last) page; while
+/// backfilling, always; otherwise only while every mail on the page was new (a gap since the last refresh).
+pub fn keep_paging(len: usize, any_archived: bool, backfilling: bool) -> bool {
+    len >= zkill::PAGE_SIZE && (backfilling || !any_archived)
+}
+
+/// One character's walk through its zKillboard pages: the mails the archive doesn't have yet (each once), and the
+/// progress to keep. `archived` says whether a mail is archived already; `fetch` reads a page.
+async fn zkill_walk<F, Fut>(start: ZkillProgress, archived: impl Fn(i64) -> bool, mut fetch: F) -> (Vec<ZkillMail>, ZkillProgress)
+where
+    F: FnMut(u32) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<ZkillMail>, PageError>>,
+{
+    let mut p = start;
+    let backfilling = !p.backfilled;
+    let mut page = if backfilling { p.next_page.max(1) } else { 1 };
+    let mut found = Vec::new();
+    let mut seen = HashSet::new();
+    for _ in 0..ZKILL_PAGES {
+        let list = match fetch(page).await {
+            Ok(list) => list,
+            // a page zKillboard won't serve this deep into the history: take it as read rather than ask forever
+            Err(PageError::Failed(e)) if backfilling && page > 1 => {
+                tracing::info!("zKillboard page {page}: {e}; taking the history as read");
+                p = ZkillProgress { backfilled: true, next_page: 0 };
+                break;
+            }
+            // busy or failing: the next refresh carries on from the same page
+            Err(_) => break,
+        };
+        let len = list.len();
+        let any_archived = list.iter().any(|m| archived(m.killmail_id));
+        found.extend(list.into_iter().filter(|m| !archived(m.killmail_id) && seen.insert(m.killmail_id)));
+        if !keep_paging(len, any_archived, backfilling) {
+            if backfilling {
+                p = ZkillProgress { backfilled: true, next_page: 0 };
+            }
+            break;
+        }
+        page += 1;
+        if backfilling {
+            p.next_page = page;
+        }
+    }
+    (found, p)
+}
+
+/// One character at a time reads zKillboard, so its requests stay paced however many characters refresh at once.
+static ZKILL_WALK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Adds the character's mails from zKillboard that the archive doesn't have: whole mails as zKillboard sends them,
+/// any that come as bare ids fetched from ESI by hash. PodStack values them like every other mail.
+pub async fn from_zkill(cx: &Cx) {
+    if !zkill_enabled(&cx.core) {
+        return;
+    }
+    let _walking = ZKILL_WALK.lock().await;
+    let id = cx.id;
+    let start = archive_snapshot().zkill.get(&id).copied().unwrap_or_default();
+    let (found, progress) = {
+        let a = archive_snapshot();
+        zkill_walk(start, |k| a.contains(k), |page| zkill::page(id, page)).await
+    };
+    let listed: Vec<i64> = found.iter().map(|m| m.killmail_id).collect();
+    let (mut mails, wanted) = split_found(found);
+    mails.extend(fetch_esi(cx, &wanted).await);
+    if !mails.is_empty() {
+        tracing::info!("zKillboard: {} new killmails for {id}", mails.len());
+    }
+    let (new, names) = place(cx, mails).await;
+    archive(&cx.core, id, &listed, new, names);
+    set_zkill_progress(&cx.core, id, progress);
+}
+
+/// A mail's id and hash, which fetch it from ESI.
+type IdHash = (i64, String);
+
+/// zKillboard's mails as whole mails to archive, and (id, hash) of the ones to fetch from ESI (up to
+/// [`FETCH_BATCH`]).
+fn split_found(found: Vec<ZkillMail>) -> (Vec<(EsiKillmail, String)>, Vec<IdHash>) {
+    let mut whole = Vec::new();
+    let mut bare = Vec::new();
+    for m in found {
+        match m.mail {
+            Some(mail) => whole.push((mail, m.hash)),
+            None if bare.len() < FETCH_BATCH => bare.push((m.killmail_id, m.hash)),
+            None => {}
+        }
+    }
+    (whole, bare)
 }
 
 /// Values the archived mails that couldn't be valued when archived (prices weren't available then).
@@ -883,7 +1032,11 @@ mod tests {
     }
 
     fn archive_of(kills: Vec<ArchivedKill>) -> Archive {
-        Archive { kills: kills.into_iter().map(|k| (k.id(), k)).collect(), names: BTreeMap::from([(98000001, "Enemy Corp".to_string())]) }
+        Archive {
+            kills: kills.into_iter().map(|k| (k.id(), k)).collect(),
+            names: BTreeMap::from([(98000001, "Enemy Corp".to_string())]),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -1064,5 +1217,119 @@ mod tests {
         assert_eq!(class, "Frigates");
         let (class, group) = ship_class(-1);
         assert_eq!((class.as_str(), group.as_str()), ("Other", "Other"));
+    }
+
+    fn zmails(ids: std::ops::Range<i64>) -> Vec<ZkillMail> {
+        ids.rev().map(|id| ZkillMail { killmail_id: id, hash: format!("h{id}"), mail: None }).collect()
+    }
+
+    /// A zKillboard history of `total` mails (ids 1..=total), newest first, 200 a page.
+    fn history(total: i64) -> impl Fn(u32) -> std::future::Ready<Result<Vec<ZkillMail>, PageError>> {
+        move |page| {
+            let end = total - (page as i64 - 1) * 200;
+            let start = (end - 200).max(0);
+            std::future::ready(Ok(if end <= 0 { vec![] } else { zmails(start + 1..end + 1) }))
+        }
+    }
+
+    #[test]
+    fn paging_stops() {
+        // a short page is the last one
+        assert!(!keep_paging(150, false, true));
+        assert!(keep_paging(200, true, true), "backfilling reads on past archived mails");
+        assert!(!keep_paging(200, true, false), "afterwards it stops at the first archived mail");
+        assert!(keep_paging(200, false, false), "a whole page of new mails: there may be more");
+    }
+
+    #[tokio::test]
+    async fn zkill_backfills_then_reads_only_the_newest_page() {
+        // 450 mails: three pages, the last short
+        let (found, p) = zkill_walk(ZkillProgress::default(), |_| false, history(450)).await;
+        assert_eq!(found.len(), 450);
+        assert_eq!(p, ZkillProgress { backfilled: true, next_page: 0 });
+
+        // 3000 mails: the first refresh stops after ZKILL_PAGES and the next carries on from there
+        let (found, p) = zkill_walk(ZkillProgress::default(), |_| false, history(3000)).await;
+        assert_eq!(found.len(), 200 * ZKILL_PAGES as usize);
+        assert_eq!(p, ZkillProgress { backfilled: false, next_page: ZKILL_PAGES + 1 });
+        let (rest, p) = zkill_walk(p, |_| false, history(3000)).await;
+        assert_eq!(rest.len(), 1000);
+        assert!(p.backfilled);
+
+        // afterwards one page, as everything older on it is archived
+        let pages = std::cell::Cell::new(0);
+        let (found, p2) = zkill_walk(
+            p,
+            |id| id <= 3000,
+            |n| {
+                pages.set(pages.get() + 1);
+                history(3010)(n)
+            },
+        )
+        .await;
+        assert_eq!(pages.get(), 1);
+        assert_eq!(found.iter().map(|m| m.killmail_id).collect::<Vec<_>>(), (3001..=3010).rev().collect::<Vec<_>>());
+        assert_eq!(p2, p);
+    }
+
+    #[tokio::test]
+    async fn zkill_busy_keeps_the_place() {
+        let start = ZkillProgress { backfilled: false, next_page: 4 };
+        let (found, p) = zkill_walk(start, |_| false, |_| std::future::ready(Err(PageError::Busy))).await;
+        assert!(found.is_empty());
+        assert_eq!(p, start);
+        // a page zKillboard refuses deep in the history ends the backfill instead of asking forever
+        let (_, p) = zkill_walk(start, |_| false, |_| std::future::ready(Err(PageError::Failed("403".into())))).await;
+        assert!(p.backfilled);
+    }
+
+    #[tokio::test]
+    async fn zkill_and_esi_archive_a_mail_once() {
+        let mut a = Archive::default();
+        let esi = kill(7, at(1, 1), Some(5), 98000001, 587, vec![attacker(Some(ME), 1, 587, 1, true)], 1e6);
+        merge(&mut a, ME, &[7], vec![esi.clone()], HashMap::new());
+        // zKillboard lists the same mail, and one ESI didn't (the alt only helped)
+        let list = vec![
+            ZkillMail { killmail_id: 8, hash: "h8".into(), mail: Some(EsiKillmail { killmail_id: 8, ..esi.mail.clone() }) },
+            ZkillMail { killmail_id: 7, hash: "h7".into(), mail: Some(esi.mail.clone()) },
+            ZkillMail { killmail_id: 6, hash: "h6".into(), mail: None },
+        ];
+        let (found, _) = zkill_walk(ZkillProgress::default(), |id| a.contains(id), |_| std::future::ready(Ok(list.clone()))).await;
+        assert_eq!(found.iter().map(|m| m.killmail_id).collect::<Vec<_>>(), vec![8, 6], "the archived mail isn't asked for again");
+        let (whole, wanted) = split_found(found);
+        assert_eq!(whole.len(), 1);
+        assert_eq!(wanted, vec![(6, "h6".to_string())]);
+        let mut from_zkill = esi.clone();
+        from_zkill.value = None;
+        merge(&mut a, ALT, &[7, 8], vec![from_zkill], HashMap::new());
+        assert_eq!(a.kills.len(), 1);
+        assert!(a.get(7).unwrap().value.is_some(), "the first copy stays");
+        assert_eq!(a.get(7).unwrap().seen_by, BTreeSet::from([ME, ALT]));
+    }
+
+    #[test]
+    fn participant_kills_count_without_a_final_blow() {
+        let mine = HashSet::from([ME, ALT]);
+        // the alt helped, a stranger landed the final blow
+        let helped =
+            kill(1, at(5, 20), Some(5), 98000001, 587, vec![attacker(Some(ALT), 1, 12005, 300, false), attacker(Some(9), 2, 587, 900, true)], 8e6);
+        let e = entry(&helped, &mine).unwrap();
+        assert!(!e.loss && !e.solo && e.final_blow.is_none());
+        // two of mine, neither on the final blow: shared, not solo
+        let both = kill(
+            2,
+            at(5, 21),
+            Some(6),
+            98000001,
+            587,
+            vec![attacker(Some(ME), 1, 11987, 300, false), attacker(Some(ALT), 1, 12005, 300, false), attacker(Some(9), 2, 587, 10, true)],
+            2e6,
+        );
+        let a = archive_of(vec![helped, both]);
+        let an = analyze(&a, &entries(&a, &mine, None), &[ME, ALT], None, at(6, 0));
+        let t = an.totals;
+        assert_eq!((t.tally.kills, t.final_blows, t.solo, t.gang, t.shared), (2, 0, 0, 2, 1));
+        assert_eq!(an.characters.iter().find(|c| c.char_id == ALT).unwrap().tally.kills, 2);
+        assert_eq!(an.characters.iter().find(|c| c.char_id == ME).unwrap().tally.kills, 1);
     }
 }

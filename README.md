@@ -87,6 +87,9 @@ What a killboard shows one character at a time, for all of your characters toget
   kill you most, and the hours and weekdays you fight.
 - **Top kills and most expensive losses**, and every killmail with its fit, what dropped, the attackers (your characters
   marked) and a link to zKillboard.
+- **Every kill you were on.** ESI only gives a character its losses and the kills where it landed the final blow,
+  so PodStack also reads your characters' killmails from [zKillboard](https://zkillboard.com), which has the kills
+  you only took part in and your history from before PodStack. You can turn that off on the page.
 - **History that keeps growing.** ESI only lists recent killmails; PodStack keeps every one it sees.
 
 <img src="docs/screenshots/kills.png" width="100%" alt="Kills and losses across all characters">
@@ -276,8 +279,10 @@ light or system mode, with a choice of scheme variant and contrast:
 ## Your data and privacy
 
 - PodStack talks to CCP (the EVE login servers, the ESI API and CCP's static data downloads), to GitHub once per
-  start to see whether a newer PodStack is out (Settings → General → Updates turns that off), and to Discord only
-  if you set up Discord alerts. There is no PodStack server, account, analytics or telemetry.
+  start to see whether a newer PodStack is out (Settings → General → Updates turns that off), to zKillboard about
+  once an hour per character for its killmails, sending only the character's public ID (the switch on the Kills &
+  Losses page turns that off), and to Discord only if you set up Discord alerts. There is no PodStack server,
+  account, analytics or telemetry.
 - Login tokens are stored in `auth.json` in PodStack's data folder, readable only by you. That folder holds your
   characters, plans, doctrines, contract history and settings; the cache folder holds prices, names and CCP's
   static data. Both stay on your computer:

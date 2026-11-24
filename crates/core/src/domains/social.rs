@@ -426,8 +426,9 @@ fn latest(mut recent: Vec<RawRecent>) -> Vec<RawRecent> {
 }
 
 // Every killmail the character's recent list shows goes into `features::killboard`'s archive (fetched whole once,
-// whichever of the user's characters lists it first). The Kill Log tab's latest ones are built from the archive, and
-// ones already loaded are kept as they are: a killmail never changes.
+// whichever of the user's characters lists it first), and so do its mails on zKillboard unless that's turned off.
+// The Kill Log tab's latest ones are built from the archive, and ones already loaded are kept as they are: a
+// killmail never changes.
 async fn refresh_killmails(cx: &Cx) -> DomainResult {
     use crate::features::killboard;
     let mut all: Vec<RawRecent> =
@@ -443,6 +444,8 @@ async fn refresh_killmails(cx: &Cx) -> DomainResult {
         .collect();
     let (new, names) = killboard::fetch_new(cx, &wanted).await;
     killboard::archive(&cx.core, cx.id, &listed, new, names);
+    // after ESI's own list, so a mail both list is fetched once: the kills this character only took part in
+    killboard::from_zkill(cx).await;
     killboard::value_missing(cx).await;
 
     let archived = killboard::archive_snapshot();

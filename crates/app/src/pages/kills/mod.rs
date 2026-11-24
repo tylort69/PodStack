@@ -111,6 +111,7 @@ pub fn build(ctx: &Ctx) -> Page {
             "No kills or losses yet",
             "Your characters' kills and losses show here once PodStack has seen them. ESI lists the last 90 days; PodStack keeps every mail it sees, so the history grows from there.",
         ));
+        body.append(&sources_card(ctx));
         return Page::new("Kills & Losses", body);
     }
 
@@ -168,7 +169,24 @@ pub fn build(ctx: &Ctx) -> Page {
     body.append(&split);
 
     body.append(&mail_list(ctx, archive, entries, names, &mine, period, &chars));
+    body.append(&sources_card(ctx));
     Page::new("Kills & Losses", body)
+}
+
+/// Where the mails come from, and the switch for zKillboard.
+fn sources_card(ctx: &Ctx) -> gtk::Widget {
+    let core = ctx.core().clone();
+    let row = w::switch_row(
+        "Include kills you took part in (from zKillboard)",
+        Some(
+            "ESI only lists your losses and the kills where you landed the final blow. zKillboard has the rest, and your \
+             history from before PodStack; to ask for them, PodStack sends zKillboard your characters' public character \
+             IDs, about once an hour. Takes effect on the next refresh.",
+        ),
+        kb::zkill_enabled(&core),
+        move |on| core.set_setting(kb::ZKILL_SETTING, &Some(on)),
+    );
+    w::card_with("Sources", Some("Every killmail ESI lists, and optionally zKillboard's"), &[], &row).upcast()
 }
 
 /// Remembers a choice and rebuilds the page once the clicked widget's handler has returned (the rebuild replaces it).
