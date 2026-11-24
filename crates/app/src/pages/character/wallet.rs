@@ -12,9 +12,9 @@ use podstack_core::fmt;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-const SCOPE: &str = "esi-wallet.read_character_wallet.v1";
+pub(crate) const SCOPE: &str = "esi-wallet.read_character_wallet.v1";
 
-const CSS: &str = "
+pub(crate) const CSS: &str = "
 .comms-filter-bar { padding: 4px 0; }
 .comms-isk-in { color: @success; }
 .comms-isk-out { color: @error; }
@@ -165,7 +165,7 @@ fn missing(c: &podstack_core::Character, key: &str, waiting: &str) -> gtk::Widge
 }
 
 /// "+1,234.50" in the income color, "-1,234.50" in the expense color.
-fn isk_cell(v: f64) -> gtk::Widget {
+pub(crate) fn isk_cell(v: f64) -> gtk::Widget {
     let l = w::line(&format!("{}{}", if v > 0.0 { "+" } else { "" }, fmt::decimal(v, 2)), &["numeric"]);
     l.set_xalign(1.0);
     if v > 0.0 {
@@ -176,7 +176,7 @@ fn isk_cell(v: f64) -> gtk::Widget {
     l.upcast()
 }
 
-fn date_cell(t: DateTime<Utc>) -> gtk::Widget {
+pub(crate) fn date_cell(t: DateTime<Utc>) -> gtk::Widget {
     let l = w::line(&fmt::datetime(t), &["dim", "numeric"]);
     l.set_tooltip_text(Some(&fmt::relative(t)));
     l.upcast()
@@ -273,7 +273,7 @@ impl Geo {
     }
 }
 
-fn source(cr: &gtk::cairo::Context, role: &str, alpha: f64) {
+pub(crate) fn source(cr: &gtk::cairo::Context, role: &str, alpha: f64) {
     let c = crate::theme::rgba(role);
     cr.set_source_rgba(c.red() as f64, c.green() as f64, c.blue() as f64, c.alpha() as f64 * alpha);
 }

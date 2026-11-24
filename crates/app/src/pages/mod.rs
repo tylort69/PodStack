@@ -16,6 +16,7 @@ pub mod settings;
 pub mod ship_browser;
 pub mod skill_browser;
 pub mod sp_farming;
+pub mod wallet;
 
 use crate::ctx::{Ctx, Page, Route};
 
@@ -30,6 +31,7 @@ pub fn build(ctx: &Ctx, route: Route) -> Page {
         Route::Doctrines => doctrines::build(ctx),
         Route::AssetSearch => asset_search::build(ctx),
         Route::Market => market::build(ctx),
+        Route::Wallet => wallet::build(ctx),
         Route::Industry => industry::build(ctx),
         Route::Planets => planets::build(ctx),
         Route::Settings => settings::build(ctx),

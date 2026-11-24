@@ -22,6 +22,8 @@ pub mod asset_tree;
 
 // Mail bodies, contracts and wallet helpers
 pub mod comms;
+// Wallet journal by category, activity, character and day: where the ISK comes from and goes to (`wallet_flow`)
+pub mod wallet_flow;
 // Alerts to Discord: webhook, bot channel or bot DM (`discord`)
 pub mod discord;
 // Contract history, money flows and totals (`contracts`)

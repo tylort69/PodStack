@@ -354,7 +354,7 @@ fn source(cr: &gtk::cairo::Context, role: &str, alpha: f64) {
 }
 
 /// A bar rounded at its top.
-fn bar(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64) {
+pub(crate) fn bar(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64) {
     use std::f64::consts::{FRAC_PI_2, PI};
     let r = (w / 2.0).min(4.0).min(h);
     cr.new_path();

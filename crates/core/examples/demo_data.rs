@@ -1,5 +1,7 @@
 //! Builds a demo data directory: six characters of one player (a main, a capital alt, a logistics alt, a hauler, a
-//! mid-skilled alt and a new one) with skills, half a year of contracts, and a doctrine library with groups and SIGs.
+//! mid-skilled alt and a new one) with skills, half a year of contracts, four months of wallet journal and market
+//! transactions (ratting, missions, mining, PI, trading, hauling, SP farming), and a doctrine library with groups and
+//! SIGs.
 //! For UI testing and screenshots, never for a real data directory.
 //!
 //!     cargo run -p podstack-core --example demo_data -- <empty data dir> [cache dir]
@@ -14,9 +16,10 @@ use podstack_core::character::Character;
 use podstack_core::domains::contracts::{Bid, Contract, ContractItem, ContractsData};
 use podstack_core::domains::info::{Alliance, Corporation, Info};
 use podstack_core::domains::skills::{Attributes, QueueEntry, Skill, SkillsData};
+use podstack_core::domains::wallet::{JournalData, JournalEntry, Transaction, TransactionsData};
 use podstack_core::features::contracts::{Archive, ArchivedContract, Valuation};
 use podstack_core::features::doctrines::{self, Doctrine, DoctrineDoc, Group};
-use podstack_core::sde::SKILLS;
+use podstack_core::sde::{MARKET, SKILLS};
 use podstack_core::universe::Place;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -144,6 +147,201 @@ impl Rng {
     fn f(&mut self, lo: f64, hi: f64) -> f64 {
         lo + (self.next() % 10_000) as f64 / 10_000.0 * (hi - lo)
     }
+}
+
+/// Four months of a character's wallet: what each profile does for ISK, day by day, with the market transactions
+/// behind its market lines. Balances are worked out backwards from the current wallet.
+fn wallet_history(rng: &mut Rng, id: i64, profile: Profile, now: DateTime<Utc>, balance: f64, at: &Place) -> (JournalData, TransactionsData) {
+    const DAYS: i64 = 120;
+    const CONCORD: i64 = 1000125;
+    let mut entries: Vec<JournalEntry> = Vec::new();
+    let mut transactions: Vec<Transaction> = Vec::new();
+    let base = id * 100_000;
+    let mut push = |when: DateTime<Utc>, ref_type: &str, amount: f64, description: &str, tx: Option<(i64, i64, bool)>| {
+        let jid = base + entries.len() as i64 + 1;
+        if let Some((type_id, quantity, is_buy)) = tx {
+            transactions.push(Transaction {
+                transaction_id: jid * 7,
+                date: when,
+                type_id,
+                name: MARKET.get(type_id).map(|t| t.name.clone()).unwrap_or_else(|| format!("Type #{type_id}")),
+                quantity,
+                unit_price: (amount.abs() / quantity as f64 * 100.0).round() / 100.0,
+                is_buy,
+                client_id: 95000000 + jid % 400,
+                client: Some(["Jita Trader", "Ore Baron", "Market Maker", "Station Trader"][(jid % 4) as usize].into()),
+                location_id: at.id,
+                location: at.clone(),
+                journal_ref_id: Some(jid),
+            });
+        }
+        entries.push(JournalEntry {
+            id: jid,
+            date: when,
+            ref_type: ref_type.into(),
+            amount: amount.round(),
+            description: description.into(),
+            first_party_id: Some(CONCORD),
+            second_party_id: Some(id),
+            ..Default::default()
+        });
+    };
+    for day in (0..DAYS).rev() {
+        let start = now - Duration::days(day) - Duration::hours(20);
+        let t = |rng: &mut Rng| start + Duration::minutes(rng.range(0, 19 * 60));
+        let t = |rng: &mut Rng| t(rng).min(now - Duration::minutes(5));
+        let active = rng.range(0, 10) < 7;
+        match profile {
+            Profile::Veteran => {
+                if active {
+                    for _ in 0..rng.range(3, 7) {
+                        let w = t(rng);
+                        push(w, "bounty_prizes", rng.f(15e6, 42e6), "Bounty prizes", None);
+                    }
+                }
+                if day % 3 == 0 {
+                    let w = t(rng);
+                    push(w, "ess_escrow_transfer", rng.f(50e6, 160e6), "ESS escrow payout", None);
+                }
+                if day % 30 == 4 {
+                    let w = t(rng);
+                    push(w, "market_transaction", -rng.f(480e6, 520e6), "Market: PLEX", Some((44992, 100, true)));
+                }
+                if day % 17 == 2 {
+                    let w = t(rng);
+                    push(w, "market_transaction", -rng.f(280e6, 340e6), "Market: Ishtar", Some((12005, 1, true)));
+                    let w = w + Duration::minutes(1);
+                    push(w, "insurance", -rng.f(20e6, 30e6), "Insurance premium", None);
+                }
+                if day % 40 == 9 {
+                    let w = t(rng);
+                    push(w, "insurance", rng.f(60e6, 90e6), "Insurance payout", None);
+                }
+                if day % 14 == 5 {
+                    let w = t(rng);
+                    push(w, "player_donation", -50e6, "Kira Vex deposited cash into Pell Arno's account", None);
+                }
+                if day % 9 == 1 {
+                    let w = t(rng);
+                    push(w, "jump_clone_activation_fee", -rng.f(0.9e6, 1.1e6), "Jump clone activation fee", None);
+                }
+            }
+            Profile::Capitals => {
+                if active {
+                    for _ in 0..rng.range(2, 5) {
+                        let w = t(rng);
+                        push(w, "bounty_prizes", rng.f(40e6, 85e6), "Bounty prizes", None);
+                    }
+                }
+                if day % 30 == 11 {
+                    // the SP farm: a few injectors sold, extractors bought
+                    for _ in 0..3 {
+                        let w = t(rng);
+                        push(w, "market_transaction", rng.f(880e6, 940e6), "Market: Large Skill Injector", Some((40520, 1, false)));
+                        push(w + Duration::seconds(1), "transaction_tax", -rng.f(30e6, 34e6), "Sales tax", None);
+                    }
+                    let w = t(rng);
+                    push(w, "market_transaction", -rng.f(1.05e9, 1.15e9), "Market: Skill Extractor", Some((40519, 3, true)));
+                }
+                if day % 20 == 6 {
+                    let w = t(rng);
+                    push(w, "market_transaction", -rng.f(150e6, 260e6), "Market: Tritanium", Some((34, 40_000_000, true)));
+                    let w = w + Duration::hours(1);
+                    push(w, "industry_job_tax", -rng.f(40e6, 70e6), "Manufacturing job installation", None);
+                }
+            }
+            Profile::Logistics => {
+                if active {
+                    for _ in 0..rng.range(2, 6) {
+                        let w = t(rng);
+                        push(w, "agent_mission_reward", rng.f(1.2e6, 3.4e6), "Mission reward", None);
+                        push(w + Duration::seconds(1), "agent_mission_time_bonus_reward", rng.f(0.8e6, 2.4e6), "Mission time bonus", None);
+                    }
+                }
+                if day % 6 == 0 {
+                    let w = t(rng);
+                    push(w, "market_transaction", rng.f(30e6, 70e6), "Market: Damage Control II", Some((2048, 120, false)));
+                    push(w + Duration::seconds(1), "transaction_tax", -rng.f(1e6, 2.5e6), "Sales tax", None);
+                }
+                if day % 10 == 3 {
+                    let w = t(rng);
+                    push(w, "lp_store", -rng.f(10e6, 25e6), "LP store purchase", None);
+                }
+                if day % 45 == 7 {
+                    let w = t(rng);
+                    push(w, "skill_purchase", -rng.f(30e6, 60e6), "Skill purchase", None);
+                }
+            }
+            Profile::Hauler => {
+                if day % 2 == 0 {
+                    let w = t(rng);
+                    let collateral = rng.f(0.5e9, 1.8e9);
+                    push(w, "contract_collateral", -collateral, "Courier collateral", None);
+                    let w = (w + Duration::hours(rng.range(2, 18))).min(now - Duration::minutes(1));
+                    push(w, "contract_collateral_refund", collateral, "Courier collateral refunded", None);
+                    push(w + Duration::seconds(1), "contract_reward", rng.f(12e6, 45e6), "Courier reward", None);
+                }
+                if active {
+                    // station trading: buy orders filled from escrow, sells, broker fees and sales tax
+                    let w = t(rng);
+                    let buy = rng.f(80e6, 220e6);
+                    push(w, "market_escrow", -buy, "Market escrow", None);
+                    push(w + Duration::minutes(3), "brokers_fee", -buy * 0.015, "Broker fee", None);
+                    if rng.range(0, 4) == 0 {
+                        push(w + Duration::hours(1), "market_escrow", buy * 0.3, "Market escrow released", None);
+                    }
+                    let w = t(rng);
+                    let sell = buy * rng.f(1.05, 1.22);
+                    push(w, "market_transaction", sell, "Market: Damage Control II", Some((2048, 1500, false)));
+                    push(w + Duration::seconds(1), "transaction_tax", -sell * 0.036, "Sales tax", None);
+                    push(w + Duration::seconds(2), "brokers_fee", -sell * 0.015, "Broker fee", None);
+                }
+            }
+            Profile::Mid => {
+                if active {
+                    let w = t(rng);
+                    push(w, "market_transaction", rng.f(25e6, 60e6), "Market: Batch Compressed Scordite", Some((28429, 300, false)));
+                    if day % 2 == 0 {
+                        push(w + Duration::minutes(4), "market_transaction", rng.f(15e6, 35e6), "Market: Pyerite", Some((35, 1_500_000, false)));
+                    }
+                    push(w + Duration::seconds(1), "transaction_tax", -rng.f(1e6, 3e6), "Sales tax", None);
+                }
+                if day % 4 == 1 {
+                    let w = t(rng);
+                    push(w, "planetary_export_tax", -rng.f(2e6, 5e6), "Planetary export tax", None);
+                    push(w + Duration::hours(2), "market_transaction", rng.f(25e6, 45e6), "Market: Bacteria", Some((2393, 60_000, false)));
+                }
+                if day % 12 == 2 {
+                    let w = t(rng);
+                    push(w, "planetary_import_tax", -rng.f(0.5e6, 1.5e6), "Planetary import tax", None);
+                }
+            }
+            Profile::New => {
+                if day % 14 == 5 {
+                    let w = t(rng);
+                    push(w, "player_donation", 50e6, "Kira Vex deposited cash into Pell Arno's account", None);
+                }
+                if day < 40 && active {
+                    let w = t(rng);
+                    push(w, "agent_mission_reward", rng.f(0.2e6, 0.6e6), "Mission reward", None);
+                }
+                if day % 15 == 3 {
+                    let w = t(rng);
+                    push(w, "skill_purchase", -rng.f(5e6, 15e6), "Skill purchase", None);
+                    push(w + Duration::hours(1), "market_transaction", -rng.f(0.4e6, 0.6e6), "Market: Rifter", Some((587, 1, true)));
+                }
+            }
+        }
+    }
+    // newest first, each with the balance after it
+    entries.sort_by(|a, b| b.date.cmp(&a.date).then(b.id.cmp(&a.id)));
+    let mut after = balance;
+    for e in &mut entries {
+        e.balance = Some(after);
+        after -= e.amount;
+    }
+    transactions.sort_by(|a, b| b.date.cmp(&a.date).then(b.transaction_id.cmp(&a.transaction_id)));
+    (JournalData { entries }, TransactionsData { transactions })
 }
 
 fn item(type_id: i64, name: &str, quantity: i64) -> ContractItem {
@@ -541,6 +739,9 @@ async fn main() {
         c.skills = Some(skills);
         c.attributes = Some(Attributes { charisma: 19, intelligence: 24, memory: 24, perception: 27, willpower: 21, ..Default::default() });
         c.wallet = Some([4.2e9, 1.1e9, 640e6, 2.8e9, 310e6, 12e6][(id - 90000001) as usize]);
+        let (journal, transactions) = wallet_history(&mut rng, id, profile, now, c.wallet.unwrap_or(0.0), &jita);
+        c.wallet_journal = Some(journal);
+        c.wallet_transactions = Some(transactions);
         let listed: Vec<Contract> = archive
             .contracts
             .values()

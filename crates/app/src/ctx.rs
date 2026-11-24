@@ -112,6 +112,7 @@ pub enum Route {
     Doctrines,
     AssetSearch,
     Market,
+    Wallet,
     Industry,
     Planets,
     Settings,
@@ -121,7 +122,7 @@ pub enum Route {
 
 impl Route {
     /// Top-level destinations in the navigation drawer: (route, label, icon).
-    pub const DESTINATIONS: [(Route, &'static str, &'static str); 11] = [
+    pub const DESTINATIONS: [(Route, &'static str, &'static str); 12] = [
         (Route::Overview, "Overview", "dashboard"),
         (Route::SkillBrowser, "Skill Browser", "account_tree"),
         (Route::ShipBrowser, "Ship Browser", "rocket_launch"),
@@ -131,6 +132,7 @@ impl Route {
         (Route::Contracts, "Contracts", "assignment"),
         (Route::AssetSearch, "Asset Search", "manage_search"),
         (Route::Market, "Market", "storefront"),
+        (Route::Wallet, "Wallet", "account_balance_wallet"),
         (Route::Industry, "Industry", "precision_manufacturing"),
         (Route::Planets, "Planetary Industry", "public"),
     ];
