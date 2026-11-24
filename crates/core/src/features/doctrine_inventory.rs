@@ -1,20 +1,28 @@
-//! Doctrine ship inventory: for each character and doctrine, the fits it can fly, which of those it already owns a
-//! ship for (from its assets, by hull type, and whether that ship is fitted as the doctrine says), where those ships
-//! are, and what the missing ones cost to buy. Characters are grouped by account, the player's own grouping.
+//! Doctrine ship stock: for each character and doctrine, the fits it can fly, how many ships of each it should keep
+//! (its stock target), how many it has (from its assets, by hull type, and whether each is fitted as the doctrine
+//! says), where they are, and what buying the rest costs. Characters are grouped by account, the player's own
+//! grouping.
 //!
-//! Ownership is worked out per doctrine: inside one doctrine each fit needs its own ship (two Ishtar fits need two
-//! Ishtars), but the same ship counts for every doctrine it fits, since a pilot flies one doctrine at a time. The
-//! shopping list follows that: a hull missing for several doctrines is bought once per character, as many as the
-//! doctrine needing the most of them.
+//! Targets are set at several levels and the most specific one set wins: for one character a fit, then a doctrine,
+//! then everything that character flies; for everyone a fit, then a doctrine, then everything (one of each unless
+//! changed). A target of 0 means the character doesn't stock that fit.
 //!
-//! Prices are per unit and come from the caller (the page uses Jita's lowest sell orders). A missing fit that lists
-//! modules is priced as the whole fit (hull, modules, charges, drones); a fit that's only a hull is priced as the hull.
+//! Stock is worked out per doctrine: inside one doctrine each ship counts for one fit (a target of two for each of
+//! two Ishtar fits needs four Ishtars), but the same ship counts for every doctrine it fits, since a pilot flies one
+//! doctrine at a time. The shopping list follows that: a hull several doctrines are short of is bought once per
+//! character, as many as the doctrine short of the most of them.
+//!
+//! Prices are per unit and come from the caller (the page uses Jita's lowest sell orders). A fit that lists modules
+//! is bought as the whole fit (hull, modules, charges, drones); a fit that's only a hull is bought as the hull.
+
 
 use super::accounts::AccountsDoc;
 use super::doctrines::{self, Doctrine, DoctrineFit, Readiness};
 use crate::character::Character;
 use crate::domains::assets::AssetsData;
 use crate::sde::SHIPS;
+use crate::{store, Core, Event};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -79,26 +87,6 @@ pub fn fitted_as(ship: &OwnedShip, fit: &DoctrineFit) -> bool {
     ship.type_id == fit.ship_id && !ship.packaged && fit_modules(fit).iter().all(|(t, n)| ship.fitted.get(t).copied().unwrap_or(0) >= *n)
 }
 
-/// How a character holds a doctrine fit it can fly.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Holding {
-    /// No ship of that hull.
-    Missing,
-    /// The hull, packaged or fitted some other way.
-    Hull,
-    /// The hull with the fit's modules on it.
-    Fitted,
-}
-
-impl Holding {
-    pub fn label(self) -> &'static str {
-        match self {
-            Holding::Fitted => "Owned, fitted",
-            Holding::Hull => "Owned hull",
-            Holding::Missing => "Missing",
-        }
-    }
-}
 
 /// What a missing fit was priced as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,16 +150,226 @@ pub fn types_to_price<'a>(fits: impl IntoIterator<Item = &'a DoctrineFit>) -> Ve
     v
 }
 
-/// A doctrine fit a character can fly, and how it holds it.
+
+// ---------- stock targets ----------
+
+/// The document the stock targets are kept in.
+pub const TARGETS_DOC: &str = "doctrine_stock";
+/// The target when none is set anywhere.
+pub const DEFAULT_TARGET: u32 = 1;
+
+/// Targets for one scope (everyone, or one character): for everything, per doctrine, and per fit of a doctrine
+/// (keyed by [`fit_key`], as the same fit can sit in several doctrines).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ScopeTargets {
+    pub overall: Option<u32>,
+    pub doctrines: BTreeMap<String, u32>,
+    pub fits: BTreeMap<String, u32>,
+}
+
+impl ScopeTargets {
+    fn is_empty(&self) -> bool {
+        self.overall.is_none() && self.doctrines.is_empty() && self.fits.is_empty()
+    }
+    fn get(&self, level: Level, doctrine: Option<&str>, fit: Option<&str>) -> Option<u32> {
+        match level {
+            Level::Overall => self.overall,
+            Level::Doctrine => self.doctrines.get(doctrine?).copied(),
+            Level::Fit => self.fits.get(&fit_key(doctrine?, fit?)).copied(),
+        }
+    }
+    fn set(&mut self, level: Level, doctrine: Option<&str>, fit: Option<&str>, v: Option<u32>) {
+        fn put(m: &mut BTreeMap<String, u32>, k: String, v: Option<u32>) {
+            match v {
+                Some(v) => m.insert(k, v),
+                None => m.remove(&k),
+            };
+        }
+        match (level, doctrine, fit) {
+            (Level::Overall, _, _) => self.overall = v,
+            (Level::Doctrine, Some(d), _) => put(&mut self.doctrines, d.to_string(), v),
+            (Level::Fit, Some(d), Some(f)) => put(&mut self.fits, fit_key(d, f), v),
+            _ => {}
+        }
+    }
+}
+
+/// How specific a target is, inside its scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Level {
+    Overall,
+    Doctrine,
+    Fit,
+}
+
+/// Where a target came from: the level and whether it was set for the one character.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// Nothing set: [`DEFAULT_TARGET`].
+    Default,
+    Everyone(Level),
+    Character(Level),
+}
+
+/// Every stock target the user set.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Targets {
+    pub everyone: ScopeTargets,
+    pub characters: BTreeMap<i64, ScopeTargets>,
+}
+
+pub fn fit_key(doctrine: &str, fit: &str) -> String {
+    format!("{doctrine}/{fit}")
+}
+
+impl Targets {
+    /// The target for a character's fit in a doctrine.
+    pub fn target(&self, character: i64, doctrine: &str, fit: &str) -> u32 {
+        self.resolve(Some(character), Some(doctrine), Some(fit)).0
+    }
+
+    /// The target that applies at a place in the hierarchy, and where it comes from. `character` None asks for
+    /// everyone; `doctrine`/`fit` None ask for a broader level (what a doctrine's or everything's value is).
+    pub fn resolve(&self, character: Option<i64>, doctrine: Option<&str>, fit: Option<&str>) -> (u32, Source) {
+        let levels: &[Level] = match (doctrine, fit) {
+            (Some(_), Some(_)) => &[Level::Fit, Level::Doctrine, Level::Overall],
+            (Some(_), None) => &[Level::Doctrine, Level::Overall],
+            _ => &[Level::Overall],
+        };
+        if let Some(c) = character.and_then(|c| self.characters.get(&c)) {
+            for &l in levels {
+                if let Some(v) = c.get(l, doctrine, fit) {
+                    return (v, Source::Character(l));
+                }
+            }
+        }
+        for &l in levels {
+            if let Some(v) = self.everyone.get(l, doctrine, fit) {
+                return (v, Source::Everyone(l));
+            }
+        }
+        (DEFAULT_TARGET, Source::Default)
+    }
+
+    /// The value set exactly at this place (not inherited), if any.
+    pub fn exact(&self, character: Option<i64>, doctrine: Option<&str>, fit: Option<&str>) -> Option<u32> {
+        let level = level_of(doctrine, fit);
+        match character {
+            Some(c) => self.characters.get(&c)?.get(level, doctrine, fit),
+            None => self.everyone.get(level, doctrine, fit),
+        }
+    }
+
+    /// Sets (or with None clears) the target at this place.
+    pub fn set(&mut self, character: Option<i64>, doctrine: Option<&str>, fit: Option<&str>, v: Option<u32>) {
+        let level = level_of(doctrine, fit);
+        match character {
+            Some(c) => {
+                let s = self.characters.entry(c).or_default();
+                s.set(level, doctrine, fit, v);
+                if s.is_empty() {
+                    self.characters.remove(&c);
+                }
+            }
+            None => self.everyone.set(level, doctrine, fit, v),
+        }
+    }
+
+    /// Clears every target set for one character, so it follows everyone's again.
+    pub fn clear_character(&mut self, character: i64) {
+        self.characters.remove(&character);
+    }
+}
+
+fn level_of(doctrine: Option<&str>, fit: Option<&str>) -> Level {
+    match (doctrine, fit) {
+        (Some(_), Some(_)) => Level::Fit,
+        (Some(_), None) => Level::Doctrine,
+        _ => Level::Overall,
+    }
+}
+
+pub fn load_targets() -> Targets {
+    store::load_doc(TARGETS_DOC)
+}
+
+pub fn save_targets(core: &Core, t: &Targets) {
+    store::save_doc(TARGETS_DOC, t);
+    core.emit(Event::Doc(TARGETS_DOC.into()));
+}
+
+// ---------- stock ----------
+
+/// How a character's stock of a fit stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Holding {
+    /// Fewer ships than the target.
+    Short,
+    /// As many as the target, some of them hulls not fitted as the doctrine says (or packaged).
+    Hulls,
+    /// As many as the target, all fitted as the doctrine.
+    Fitted,
+    /// The target is 0.
+    NotStocked,
+}
+
+impl Holding {
+    pub fn label(self) -> &'static str {
+        match self {
+            Holding::Short => "Short",
+            Holding::Hulls => "Stocked, not all fitted",
+            Holding::Fitted => "Stocked, fitted",
+            Holding::NotStocked => "Not stocked",
+        }
+    }
+}
+
+/// A doctrine fit a character can fly, its target and the ships counted for it.
 #[derive(Clone, Debug)]
 pub struct FitLine<'a> {
     pub fit: &'a DoctrineFit,
     pub readiness: Readiness,
-    pub holding: Holding,
-    /// The ship counted for it (when owned).
-    pub ship: Option<OwnedShip>,
-    /// What buying it costs (when missing).
-    pub cost: Option<Cost>,
+    pub target: u32,
+    /// Ships counted fitted as the doctrine, and as hulls.
+    pub fitted: u32,
+    pub hulls: u32,
+    /// The ships counted (a packaged stack's `count` is how many of it were counted here).
+    pub ships: Vec<OwnedShip>,
+    /// What buying one costs.
+    pub cost: Cost,
+}
+
+impl FitLine<'_> {
+    pub fn stock(&self) -> u32 {
+        self.fitted + self.hulls
+    }
+    pub fn short(&self) -> u32 {
+        self.target.saturating_sub(self.stock())
+    }
+    pub fn holding(&self) -> Holding {
+        if self.target == 0 {
+            Holding::NotStocked
+        } else if self.short() > 0 {
+            Holding::Short
+        } else if self.hulls > 0 {
+            Holding::Hulls
+        } else {
+            Holding::Fitted
+        }
+    }
+    fn count(&mut self, ship: &OwnedShip, fitted: bool) {
+        if fitted {
+            self.fitted += 1;
+        } else {
+            self.hulls += 1;
+        }
+        match self.ships.iter_mut().find(|s| s.item_id == ship.item_id) {
+            Some(s) => s.count += 1,
+            None => self.ships.push(OwnedShip { count: 1, ..ship.clone() }),
+        }
+    }
 }
 
 /// A character against one doctrine.
@@ -187,27 +385,38 @@ impl<'a> DoctrineLine<'a> {
     pub fn fits(&self) -> usize {
         self.doctrine.fits.len()
     }
-    pub fn owned(&self) -> usize {
-        self.flyable.iter().filter(|l| l.holding != Holding::Missing).count()
+    pub fn target(&self) -> u32 {
+        self.flyable.iter().map(|l| l.target).sum()
     }
-    pub fn missing(&self) -> impl Iterator<Item = &FitLine<'a>> {
-        self.flyable.iter().filter(|l| l.holding == Holding::Missing)
+    pub fn stock(&self) -> u32 {
+        self.flyable.iter().map(|l| l.stock()).sum()
     }
-    /// What buying every missing flyable fit of this doctrine costs.
+    pub fn short(&self) -> u32 {
+        self.flyable.iter().map(|l| l.short()).sum()
+    }
+    /// What buying this doctrine's shortfall alone costs.
     pub fn cost(&self) -> f64 {
-        self.missing().filter_map(|l| l.cost.as_ref()).map(|c| c.isk).sum()
+        self.flyable.iter().map(|l| l.cost.isk * l.short() as f64).sum()
     }
 }
 
-/// Something a character still has to buy (see the module docs for how doctrines share hulls).
+/// Ships a character still has to buy for one fit (see the module docs for how doctrines share hulls).
 #[derive(Clone, Debug)]
 pub struct Purchase<'a> {
     pub fit: &'a DoctrineFit,
     /// The doctrine this purchase is counted for.
     pub doctrine: &'a Doctrine,
-    /// How many doctrines want this hull (and fly it missing).
+    /// How many doctrines are short of this hull.
     pub wanted_by: usize,
+    pub quantity: u32,
+    /// What one costs.
     pub cost: Cost,
+}
+
+impl Purchase<'_> {
+    pub fn total(&self) -> f64 {
+        self.cost.isk * self.quantity as f64
+    }
 }
 
 /// One character against every doctrine.
@@ -215,7 +424,7 @@ pub struct Purchase<'a> {
 pub struct CharacterInventory<'a> {
     pub character_id: i64,
     pub name: String,
-    /// Without assets, nothing can be said about ownership: such a character is left out of totals.
+    /// Without assets, nothing can be said about stock: such a character is left out of totals.
     pub assets_loaded: bool,
     pub doctrines: Vec<DoctrineLine<'a>>,
     pub to_buy: Vec<Purchase<'a>>,
@@ -225,19 +434,26 @@ impl CharacterInventory<'_> {
     pub fn flyable(&self) -> usize {
         self.doctrines.iter().map(|d| d.flyable.len()).sum()
     }
-    pub fn owned(&self) -> usize {
-        self.doctrines.iter().map(|d| d.owned()).sum()
+    pub fn target(&self) -> u32 {
+        self.doctrines.iter().map(|d| d.target()).sum()
     }
-    pub fn missing(&self) -> usize {
-        self.doctrines.iter().map(|d| d.missing().count()).sum()
+    pub fn stock(&self) -> u32 {
+        self.doctrines.iter().map(|d| d.stock()).sum()
+    }
+    pub fn short(&self) -> u32 {
+        self.doctrines.iter().map(|d| d.short()).sum()
     }
     /// Doctrines with at least one fit it can fly.
     pub fn doctrines_flyable(&self) -> usize {
         self.doctrines.iter().filter(|d| !d.flyable.is_empty()).count()
     }
+    /// Ships in [`Self::to_buy`].
+    pub fn ships_to_buy(&self) -> u32 {
+        self.to_buy.iter().map(|p| p.quantity).sum()
+    }
     /// What buying everything in [`Self::to_buy`] costs.
     pub fn cost(&self) -> f64 {
-        self.to_buy.iter().map(|p| p.cost.isk).sum()
+        self.to_buy.iter().map(|p| p.total()).sum()
     }
     /// Whether some of that has no price.
     pub fn partly_priced(&self) -> bool {
@@ -256,6 +472,7 @@ pub struct Options {
 pub fn character_inventory<'a>(
     c: &Character,
     doctrines: &[(Vec<&'a str>, &'a Doctrine)],
+    targets: &Targets,
     prices: &HashMap<i64, f64>,
     opts: Options,
 ) -> Option<CharacterInventory<'a>> {
@@ -269,48 +486,60 @@ pub fn character_inventory<'a>(
             .filter_map(|f| {
                 let r = doctrines::check(c, f).readiness;
                 let ok = r == Readiness::Ready || opts.hull_only && r == Readiness::HullOnly;
-                ok.then_some(FitLine { fit: f, readiness: r, holding: Holding::Missing, ship: None, cost: None })
+                ok.then(|| FitLine {
+                    fit: f,
+                    readiness: r,
+                    target: targets.target(c.id, &d.id, &f.id),
+                    fitted: 0,
+                    hulls: 0,
+                    ships: Vec::new(),
+                    cost: fit_cost(f, prices),
+                })
             })
             .collect();
         allocate(&mut flyable, &ships);
-        for l in flyable.iter_mut().filter(|l| l.holding == Holding::Missing) {
-            l.cost = Some(fit_cost(l.fit, prices));
-        }
         lines.push(DoctrineLine { path: path.clone(), doctrine: d, flyable });
     }
     let to_buy = if c.assets.is_some() { shopping_list(&lines) } else { Vec::new() };
     Some(CharacterInventory { character_id: c.id, name: c.name(), assets_loaded: c.assets.is_some(), doctrines: lines, to_buy })
 }
 
-/// Gives each fit of one doctrine its own ship: first ships fitted as that fit, then any remaining hull of the type.
+/// Counts ships toward one doctrine's fits, one ship each, up to each fit's target: first ships fitted as the fit,
+/// then any remaining hull of the type. Fits take turns, so a scarce hull is spread over the fits that want it.
 fn allocate(lines: &mut [FitLine<'_>], ships: &[OwnedShip]) {
     let mut left: Vec<u32> = ships.iter().map(|s| s.count).collect();
-    for pass in [Holding::Fitted, Holding::Hull] {
-        for l in lines.iter_mut().filter(|l| l.holding == Holding::Missing) {
-            let found = ships
-                .iter()
-                .enumerate()
-                .filter(|(i, s)| left[*i] > 0 && s.type_id == l.fit.ship_id)
-                // the hull pass prefers assembled ships (ready to undock after a refit) over packaged ones
-                .filter(|(_, s)| pass == Holding::Hull || fitted_as(s, l.fit))
-                .min_by_key(|(_, s)| s.packaged)
-                .map(|(i, _)| i);
-            if let Some(i) = found {
-                left[i] -= 1;
-                l.holding = pass;
-                l.ship = Some(ships[i].clone());
+    for fitted in [true, false] {
+        loop {
+            let mut any = false;
+            for l in lines.iter_mut().filter(|l| l.stock() < l.target) {
+                let found = ships
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, s)| left[*i] > 0 && s.type_id == l.fit.ship_id)
+                    .filter(|(_, s)| !fitted || fitted_as(s, l.fit))
+                    // the hull pass prefers assembled ships (ready to undock after a refit) over packaged ones
+                    .min_by_key(|(_, s)| s.packaged)
+                    .map(|(i, _)| i);
+                if let Some(i) = found {
+                    left[i] -= 1;
+                    l.count(&ships[i], fitted);
+                    any = true;
+                }
+            }
+            if !any {
+                break;
             }
         }
     }
 }
 
-/// Per hull, the doctrine missing the most of it (the priciest of those on a tie) decides what's bought.
+/// Per hull, the doctrine short of the most of it (the priciest of those on a tie) decides what's bought.
 fn shopping_list<'a>(lines: &[DoctrineLine<'a>]) -> Vec<Purchase<'a>> {
-    // hull → doctrine index → missing fits of that hull
+    // hull → (doctrine index, its fits short of that hull)
     let mut by_hull: BTreeMap<i64, Vec<(usize, Vec<&FitLine<'a>>)>> = BTreeMap::new();
     for (i, d) in lines.iter().enumerate() {
         let mut per: BTreeMap<i64, Vec<&FitLine<'a>>> = BTreeMap::new();
-        for l in d.missing() {
+        for l in d.flyable.iter().filter(|l| l.short() > 0) {
             per.entry(l.fit.ship_id).or_default().push(l);
         }
         for (hull, fits) in per {
@@ -319,12 +548,15 @@ fn shopping_list<'a>(lines: &[DoctrineLine<'a>]) -> Vec<Purchase<'a>> {
     }
     let mut out = Vec::new();
     for wants in by_hull.into_values() {
-        let isk = |f: &[&FitLine]| f.iter().filter_map(|l| l.cost.as_ref()).map(|c| c.isk).sum::<f64>();
-        let Some((i, fits)) = wants.iter().max_by(|a, b| a.1.len().cmp(&b.1.len()).then(isk(&a.1).total_cmp(&isk(&b.1))).then(b.0.cmp(&a.0))) else {
+        let units = |f: &[&FitLine]| f.iter().map(|l| l.short()).sum::<u32>();
+        let isk = |f: &[&FitLine]| f.iter().map(|l| l.cost.isk * l.short() as f64).sum::<f64>();
+        let Some((i, fits)) =
+            wants.iter().max_by(|a, b| units(&a.1).cmp(&units(&b.1)).then(isk(&a.1).total_cmp(&isk(&b.1))).then(b.0.cmp(&a.0)))
+        else {
             continue;
         };
         for l in fits {
-            out.push(Purchase { fit: l.fit, doctrine: lines[*i].doctrine, wanted_by: wants.len(), cost: l.cost.clone().unwrap_or_else(|| fit_cost(l.fit, &HashMap::new())) });
+            out.push(Purchase { fit: l.fit, doctrine: lines[*i].doctrine, wanted_by: wants.len(), quantity: l.short(), cost: l.cost.clone() });
         }
     }
     out
@@ -351,6 +583,7 @@ pub fn inventory<'a>(
     chars: &[Arc<Character>],
     accounts: &AccountsDoc,
     doctrines: &[(Vec<&'a str>, &'a Doctrine)],
+    targets: &Targets,
     prices: &HashMap<i64, f64>,
     opts: Options,
 ) -> Vec<AccountInventory<'a>> {
@@ -358,7 +591,7 @@ pub fn inventory<'a>(
         accounts.list().into_iter().map(|a| AccountInventory { account: Some(a.id), name: a.name, characters: Vec::new() }).collect();
     let mut none = AccountInventory { account: None, name: "No account".into(), characters: Vec::new() };
     for c in chars {
-        let Some(inv) = character_inventory(c, doctrines, prices, opts) else { continue };
+        let Some(inv) = character_inventory(c, doctrines, targets, prices, opts) else { continue };
         let at = accounts.account_of(c.id).and_then(|a| groups.iter().position(|g| g.account.as_deref() == Some(a)));
         match at {
             Some(i) => groups[i].characters.push(inv),
@@ -378,14 +611,17 @@ pub fn inventory<'a>(
 pub struct Totals {
     pub characters: usize,
     pub flyable: usize,
-    pub owned: usize,
-    pub fitted: usize,
-    pub missing: usize,
-    /// What buying everything missing costs (only characters with assets loaded).
+    /// Ships wanted (the targets), in stock, of those fitted as the doctrine, and short.
+    pub target: u32,
+    pub stock: u32,
+    pub fitted: u32,
+    pub short: u32,
+    /// Ships on the shopping lists, and what buying them costs (only characters with assets loaded).
+    pub to_buy: u32,
     pub cost: f64,
-    /// Purchases priced as full fits, and as hulls.
-    pub fit_priced: usize,
-    pub hull_priced: usize,
+    /// Ships bought as full fits, and as hulls.
+    pub fit_priced: u32,
+    pub hull_priced: u32,
     /// Purchases with an item that has no price.
     pub partly_priced: usize,
 }
@@ -395,19 +631,60 @@ pub fn totals(groups: &[AccountInventory]) -> Totals {
     for c in groups.iter().flat_map(|g| &g.characters).filter(|c| c.assets_loaded) {
         t.characters += 1;
         t.flyable += c.flyable();
-        t.owned += c.owned();
-        t.fitted += c.doctrines.iter().flat_map(|d| &d.flyable).filter(|l| l.holding == Holding::Fitted).count();
-        t.missing += c.missing();
+        t.target += c.target();
+        t.stock += c.stock();
+        t.fitted += c.doctrines.iter().flat_map(|d| &d.flyable).map(|l| l.fitted).sum::<u32>();
+        t.short += c.short();
+        t.to_buy += c.ships_to_buy();
         t.cost += c.cost();
         for p in &c.to_buy {
             match p.cost.basis {
-                Basis::Fit => t.fit_priced += 1,
-                Basis::Hull => t.hull_priced += 1,
+                Basis::Fit => t.fit_priced += p.quantity,
+                Basis::Hull => t.hull_priced += p.quantity,
             }
             t.partly_priced += !p.cost.complete() as usize;
         }
     }
     t
+}
+
+// ---------- shopping list export ----------
+
+/// One line of a shopping list as items to buy.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ItemLine {
+    pub type_id: i64,
+    pub name: String,
+    pub quantity: u64,
+    /// Ships first, as the game's fitting windows list them.
+    pub is_ship: bool,
+}
+
+/// Every item the purchases add up to: hulls, and for full fits their modules, charges and drones, each type once.
+pub fn items<'a>(purchases: impl IntoIterator<Item = &'a Purchase<'a>>) -> Vec<ItemLine> {
+    let mut by_type: BTreeMap<i64, ItemLine> = BTreeMap::new();
+    let mut add = |type_id: i64, name: &str, n: u64, is_ship: bool| {
+        by_type.entry(type_id).or_insert_with(|| ItemLine { type_id, name: name.to_string(), quantity: 0, is_ship }).quantity += n;
+    };
+    for p in purchases {
+        let n = p.quantity as u64;
+        match p.cost.basis {
+            Basis::Fit => {
+                for (i, it) in p.fit.items.iter().enumerate() {
+                    add(it.type_id, &it.name, it.quantity.max(1) as u64 * n, i == 0);
+                }
+            }
+            Basis::Hull => add(p.fit.ship_id, &p.fit.ship_name, n, true),
+        }
+    }
+    let mut v: Vec<ItemLine> = by_type.into_values().collect();
+    v.sort_by(|a, b| b.is_ship.cmp(&a.is_ship).then_with(|| a.name.cmp(&b.name)));
+    v
+}
+
+/// Items as the game's Multibuy window takes them: "Name x Quantity", one per line.
+pub fn multibuy(items: &[ItemLine]) -> String {
+    items.iter().map(|i| format!("{} x{}\n", i.name, i.quantity)).collect()
 }
 
 #[cfg(test)]
@@ -514,8 +791,47 @@ mod tests {
         assert_eq!(types_to_price([&fit("t", RIFTER, Some(1)), &fit("h", SLASHER, None)]), [178, SLASHER, RIFTER, DISRUPTOR]);
     }
 
+
+    fn one_each() -> Targets {
+        Targets::default()
+    }
+
     #[test]
-    fn owned_versus_missing_per_doctrine() {
+    fn the_most_specific_target_wins() {
+        let mut t = Targets::default();
+        assert_eq!(t.resolve(Some(1), Some("d"), Some("f")), (DEFAULT_TARGET, Source::Default));
+        t.set(None, None, None, Some(2));
+        t.set(None, Some("d"), None, Some(3));
+        assert_eq!(t.resolve(Some(1), Some("d"), Some("f")), (3, Source::Everyone(Level::Doctrine)));
+        assert_eq!(t.resolve(Some(1), Some("other"), Some("f")), (2, Source::Everyone(Level::Overall)));
+        t.set(None, Some("d"), Some("f"), Some(5));
+        assert_eq!(t.target(1, "d", "f"), 5);
+        assert_eq!(t.target(1, "d", "g"), 3);
+        // anything set for the character beats everyone's, even everyone's fit
+        t.set(Some(1), None, None, Some(0));
+        assert_eq!(t.resolve(Some(1), Some("d"), Some("f")), (0, Source::Character(Level::Overall)));
+        assert_eq!(t.target(2, "d", "f"), 5, "other characters keep everyone's");
+        t.set(Some(1), Some("d"), None, Some(4));
+        t.set(Some(1), Some("d"), Some("f"), Some(6));
+        assert_eq!((t.target(1, "d", "f"), t.target(1, "d", "g"), t.target(1, "x", "y")), (6, 4, 0));
+        // the broader places show what they'd give
+        assert_eq!(t.resolve(Some(1), Some("d"), None), (4, Source::Character(Level::Doctrine)));
+        assert_eq!(t.resolve(None, Some("d"), None), (3, Source::Everyone(Level::Doctrine)));
+        assert_eq!((t.exact(Some(1), Some("d"), Some("g")), t.exact(Some(1), Some("d"), None)), (None, Some(4)));
+        // clearing goes back to inheriting, and an emptied character is dropped
+        t.set(Some(1), Some("d"), Some("f"), None);
+        assert_eq!(t.target(1, "d", "f"), 4);
+        t.clear_character(1);
+        assert_eq!(t.target(1, "d", "f"), 5);
+        t.set(Some(2), None, None, Some(1));
+        t.set(Some(2), None, None, None);
+        assert!(t.characters.is_empty());
+        let back: Targets = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back, t);
+    }
+
+    #[test]
+    fn stock_against_one_of_each() {
         // 5 fits; the pilot (Minmatar Frigate 2) flies the three needing level ≤ 2
         let d7 = doctrine(
             "d7",
@@ -523,9 +839,9 @@ mod tests {
         );
         let docs = vec![(vec!["B"], &d7)];
         let poor = pilot(1, 2, Some(vec![]));
-        let inv = character_inventory(&poor, &docs, &prices(), Options { hull_only: false }).unwrap();
+        let inv = character_inventory(&poor, &docs, &one_each(), &prices(), Options { hull_only: false }).unwrap();
         let line = &inv.doctrines[0];
-        assert_eq!((line.flyable.len(), line.fits(), line.owned()), (3, 5, 0), "flies 3 of 5, owns none of them");
+        assert_eq!((line.flyable.len(), line.fits(), line.stock(), line.short()), (3, 5, 0, 3), "flies 3 of 5, has none");
         assert_eq!(inv.cost(), 2.0 * 1_501_000.0 + 400_000.0);
 
         // one fitted Rifter, one packaged Rifter: the fitted one goes to the fit it matches
@@ -538,18 +854,48 @@ mod tests {
                 asset(12, DISRUPTOR, Some(11), "MedSlot0", true, 1),
             ]),
         );
-        let inv = character_inventory(&rich, &docs, &prices(), Options { hull_only: false }).unwrap();
-        let h: Vec<Holding> = inv.doctrines[0].flyable.iter().map(|l| l.holding).collect();
-        assert_eq!(h, [Holding::Fitted, Holding::Hull, Holding::Missing]);
-        assert_eq!(inv.doctrines[0].flyable[0].ship.as_ref().map(|s| s.item_id), Some(11));
-        assert_eq!(inv.doctrines[0].flyable[0].ship.as_ref().map(|s| s.location.as_str()), Some("Jita IV - Moon 4"));
+        let inv = character_inventory(&rich, &docs, &one_each(), &prices(), Options { hull_only: false }).unwrap();
+        let h: Vec<Holding> = inv.doctrines[0].flyable.iter().map(|l| l.holding()).collect();
+        assert_eq!(h, [Holding::Fitted, Holding::Hulls, Holding::Short]);
+        assert_eq!(inv.doctrines[0].flyable[0].ships[0].item_id, 11);
+        assert_eq!(inv.doctrines[0].flyable[0].ships[0].location, "Jita IV - Moon 4");
         assert_eq!(inv.to_buy.len(), 1);
-        assert_eq!(inv.to_buy[0].cost.basis, Basis::Hull);
+        assert_eq!((inv.to_buy[0].cost.basis, inv.to_buy[0].quantity), (Basis::Hull, 1));
 
         // hull-only fits count when asked
-        let inv = character_inventory(&poor, &docs, &prices(), Options { hull_only: true }).unwrap();
+        let inv = character_inventory(&poor, &docs, &one_each(), &prices(), Options { hull_only: true }).unwrap();
         assert_eq!(inv.doctrines[0].flyable.len(), 5);
         assert_eq!(inv.doctrines[0].flyable[3].readiness, Readiness::HullOnly);
+    }
+
+    #[test]
+    fn targets_count_ships_and_buy_the_rest() {
+        let d = doctrine("d", vec![fit("a", RIFTER, Some(1)), fit("b", RIFTER, None), fit("s", SLASHER, None)]);
+        let docs = vec![(vec!["G"], &d)];
+        let mut t = Targets::default();
+        t.set(None, Some("d"), Some("a"), Some(3));
+        t.set(None, Some("d"), Some("s"), Some(0));
+        // a stack of 2 packaged Rifters and an assembled one, which is fit b as it is (b lists no modules): fit a
+        // gets the stack
+        let c = pilot(
+            1,
+            1,
+            Some(vec![asset(1, RIFTER, None, "Hangar", false, 2), asset(2, RIFTER, None, "Hangar", true, 1), asset(3, SLASHER, None, "Hangar", true, 1)]),
+        );
+        let inv = character_inventory(&c, &docs, &t, &prices(), Options { hull_only: false }).unwrap();
+        let l = &inv.doctrines[0].flyable;
+        assert_eq!(l.iter().map(|l| (l.target, l.stock())).collect::<Vec<_>>(), [(3, 2), (1, 1), (0, 0)]);
+        assert_eq!(l[0].ships.iter().map(|s| (s.item_id, s.count)).collect::<Vec<_>>(), [(1, 2)]);
+        assert_eq!(l[2].holding(), Holding::NotStocked);
+        assert_eq!((inv.target(), inv.stock(), inv.short()), (4, 3, 1));
+        assert_eq!(inv.to_buy.iter().map(|p| (p.fit.id.as_str(), p.quantity)).collect::<Vec<_>>(), [("a", 1)]);
+        assert_eq!(inv.cost(), 1_501_000.0);
+
+        // a target for this character only
+        t.set(Some(1), Some("d"), None, Some(2));
+        let inv = character_inventory(&c, &docs, &t, &prices(), Options { hull_only: false }).unwrap();
+        assert_eq!(inv.doctrines[0].flyable.iter().map(|l| l.target).collect::<Vec<_>>(), [2, 2, 2]);
+        assert_eq!((inv.stock(), inv.short()), (4, 2), "three Rifters and the Slasher");
     }
 
     #[test]
@@ -559,8 +905,8 @@ mod tests {
         let d2 = doctrine("d2", vec![fit("c", RIFTER, Some(1)), fit("s", SLASHER, None)]);
         let docs = vec![(vec!["G"], &d1), (vec!["G"], &d2)];
         let c = pilot(1, 1, Some(vec![]));
-        let inv = character_inventory(&c, &docs, &prices(), Options { hull_only: false }).unwrap();
-        assert_eq!(inv.missing(), 4);
+        let inv = character_inventory(&c, &docs, &one_each(), &prices(), Options { hull_only: false }).unwrap();
+        assert_eq!(inv.short(), 4);
         let bought: Vec<(&str, &str, usize)> = inv.to_buy.iter().map(|p| (p.fit.id.as_str(), p.doctrine.id.as_str(), p.wanted_by)).collect();
         assert_eq!(bought, [("s", "d2", 1), ("a", "d1", 2), ("b", "d1", 2)]);
         assert_eq!(inv.cost(), 400_000.0 + 1_501_000.0 + 500_000.0);
@@ -568,9 +914,34 @@ mod tests {
 
         // one Rifter owned covers d2's Rifter fit and one of d1's
         let c = pilot(2, 1, Some(vec![asset(1, RIFTER, None, "Hangar", false, 1)]));
-        let inv = character_inventory(&c, &docs, &prices(), Options { hull_only: false }).unwrap();
-        assert_eq!(inv.owned(), 2);
+        let inv = character_inventory(&c, &docs, &one_each(), &prices(), Options { hull_only: false }).unwrap();
+        assert_eq!(inv.stock(), 2);
         assert_eq!(inv.to_buy.iter().map(|p| p.fit.id.as_str()).collect::<Vec<_>>(), ["s", "b"]);
+
+        // d2 wanting three of its Rifter fit now decides: three bought for it, none for d1 on top
+        let mut t = Targets::default();
+        t.set(None, Some("d2"), Some("c"), Some(3));
+        let c = pilot(3, 1, Some(vec![]));
+        let inv = character_inventory(&c, &docs, &t, &prices(), Options { hull_only: false }).unwrap();
+        let bought: Vec<(&str, u32)> = inv.to_buy.iter().map(|p| (p.fit.id.as_str(), p.quantity)).collect();
+        assert_eq!(bought, [("s", 1), ("c", 3)]);
+    }
+
+    #[test]
+    fn shopping_list_as_items_and_multibuy() {
+        let d = doctrine("d", vec![fit("a", RIFTER, Some(1)), fit("s", SLASHER, None)]);
+        let docs = vec![(vec!["G"], &d)];
+        let mut t = Targets::default();
+        t.set(None, None, None, Some(2));
+        let a = pilot(1, 1, Some(vec![]));
+        let b = pilot(2, 1, Some(vec![asset(1, SLASHER, None, "Hangar", false, 1)]));
+        let ia = character_inventory(&a, &docs, &t, &prices(), Options { hull_only: false }).unwrap();
+        let ib = character_inventory(&b, &docs, &t, &prices(), Options { hull_only: false }).unwrap();
+        let all = items(ia.to_buy.iter().chain(&ib.to_buy));
+        let got: Vec<(&str, u64)> = all.iter().map(|i| (i.name.as_str(), i.quantity)).collect();
+        // ships first: 4 Rifters (2 each), 3 Slashers (2 + 1); then two disruptors and 100 charges per Rifter
+        assert_eq!(got, [("Rifter", 4), ("Slasher", 3), ("EMP S", 400), ("Warp Disruptor II", 4)]);
+        assert_eq!(multibuy(&all[..2]), "Rifter x4\nSlasher x3\n");
     }
 
     #[test]
@@ -589,7 +960,7 @@ mod tests {
             pilot(3, 1, Some(vec![])),
             Arc::new(unskilled),
         ];
-        let groups = inventory(&chars, &accounts, &docs, &prices(), Options { hull_only: false });
+        let groups = inventory(&chars, &accounts, &docs, &one_each(), &prices(), Options { hull_only: false });
         let shape: Vec<(&str, Vec<i64>)> = groups.iter().map(|g| (g.name.as_str(), g.characters.iter().map(|c| c.character_id).collect())).collect();
         assert_eq!(shape, [("Account B", vec![3]), ("No account", vec![1, 2])], "unknown accounts and missing skills");
         assert_eq!(groups[0].cost(), 1_501_000.0 + 400_000.0);
@@ -598,7 +969,19 @@ mod tests {
         let t = totals(&groups);
         assert_eq!(
             t,
-            Totals { characters: 2, flyable: 4, owned: 1, fitted: 0, missing: 3, cost: 2.0 * 1_501_000.0 + 400_000.0, fit_priced: 2, hull_priced: 1, partly_priced: 0 }
+            Totals {
+                characters: 2,
+                flyable: 4,
+                target: 4,
+                stock: 1,
+                fitted: 0,
+                short: 3,
+                to_buy: 3,
+                cost: 2.0 * 1_501_000.0 + 400_000.0,
+                fit_priced: 2,
+                hull_priced: 1,
+                partly_priced: 0
+            }
         );
     }
 }

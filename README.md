@@ -111,6 +111,10 @@ For alliance pilots juggling several fleets and several characters.
 - **Pilots** shows every character's flyable doctrine fits, and a characters × doctrines matrix.
 - **Ships** counts your pilots per hull class ("4 dreadnought pilots, 17 battleship pilots") and drills into races
   and individual hulls, with the training time for everyone else.
+- **Stock** shows each pilot's stock of the doctrine ships it can fly: how many of each fit it has, fitted or as
+  hulls, and where they are, against a **stock target** you set overall, per doctrine and per fit, for everyone or
+  for one pilot. A **shopping list** for each character and for all of them prices the rest at Jita; copy it into
+  the game's Multibuy or save it as a CSV file.
 
 <img src="docs/screenshots/doctrines.png" width="100%" alt="A doctrine with its fits and who can fly each">
 
@@ -171,9 +175,6 @@ From a first frigate to alliance capital programs.
 - **Assets** per character, as a flat list or with **ships as containers**: fitted modules, drones and cargo sit
   under their ship, and the ship's value includes everything in it.
 - **Asset search** across all characters, with estimated values.
-- **Doctrine ships**: for every character and doctrine, which fits they can fly, which of those they own a ship
-  for (and where), and what the missing ones cost at Jita, per doctrine, per character, per account and overall,
-  with a shopping list.
 - **Alerts on your desktop and on Discord**: training stopped or running low, lapsed to Alpha, injector ready,
   contract completed or assigned to you, courier due soon, new mail, jump fatigue ended, industry job ready, PI
   extractor stopped, market order finished, new notifications, calendar events, a login that stopped working, and
@@ -195,8 +196,8 @@ From a first frigate to alliance capital programs.
 | Contracts: courier history | Planetary industry: production chains |
 | <img src="docs/screenshots/market.png" alt="The market browser"> | <img src="docs/screenshots/industry.png" alt="The industry calculator"> |
 | Market browser | Industry: a Tech II build with invention |
-| <img src="docs/screenshots/planner.png" alt="The industry planner building a titan"> | <img src="docs/screenshots/doctrine-ships.png" alt="Doctrine ships owned and missing"> |
-| Industry planner: a titan from the ground up | Asset search: doctrine ships owned, missing and their cost |
+| <img src="docs/screenshots/planner.png" alt="The industry planner building a titan"> | <img src="docs/screenshots/doctrine-ships.png" alt="Doctrine ship stock and what's short"> |
+| Industry planner: a titan from the ground up | Doctrines: each pilot's stock of doctrine ships |
 | <img src="docs/screenshots/assets.png" alt="Assets with ships as containers"> | <img src="docs/screenshots/wallet.png" alt="The wallet across all characters"> |
 | Assets: ships as containers | Wallet: income and spending across characters |
 | <img src="docs/screenshots/kills.png" alt="Kills and losses across all characters"> | <img src="docs/screenshots/overview.png" alt="The overview with characters in folders"> |

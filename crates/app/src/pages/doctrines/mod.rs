@@ -4,7 +4,9 @@
 //!   it accepts; import and export of fits and whole groups; who of the characters can fly each doctrine and fit,
 //!   and the skill plan for those who can't yet;
 //! - Pilots: every character with the doctrine fits it can fly, and what's closest;
-//! - Ships: how many characters can fly each class of hull (dreadnoughts, battleships, …), by race and by hull.
+//! - Ships: how many characters can fly each class of hull (dreadnoughts, battleships, …), by race and by hull;
+//! - Stock: each pilot's stock of the doctrine ships it can fly against its stock targets, and shopping lists for the
+//!   rest.
 //!
 //! The data and checks live in `podstack_core::features::doctrines`; fits are read with `features::fitting`.
 
@@ -12,6 +14,7 @@ pub mod common;
 pub mod library;
 pub mod pilots;
 pub mod ships;
+pub mod stock;
 
 use crate::ctx::{Ctx, Page, Route};
 use crate::widgets as w;
@@ -22,16 +25,18 @@ pub enum Tab {
     Doctrines,
     Pilots,
     Ships,
+    Stock,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Doctrines, Tab::Pilots, Tab::Ships];
+    pub const ALL: [Tab; 4] = [Tab::Doctrines, Tab::Pilots, Tab::Ships, Tab::Stock];
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Doctrines => "Doctrines",
             Tab::Pilots => "Pilots",
             Tab::Ships => "Ships",
+            Tab::Stock => "Stock",
         }
     }
 }
@@ -50,6 +55,7 @@ pub fn build(ctx: &Ctx) -> Page {
         Tab::Doctrines => library::build(ctx),
         Tab::Pilots => pilots::build(ctx),
         Tab::Ships => ships::build(ctx),
+        Tab::Stock => stock::build(ctx),
     }
 }
 
