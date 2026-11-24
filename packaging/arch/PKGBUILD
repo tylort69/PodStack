@@ -1,7 +1,7 @@
 # Maintainer: tylort69 <28652424+tylort69@users.noreply.github.com>
 pkgname=podstack-git
 _pkgname=PodStack
-pkgver=0.6.1
+pkgver=0.6.2
 pkgrel=1
 pkgdesc="EVE Online character manager for Linux (GTK4, Material You)"
 arch=('x86_64' 'aarch64')
