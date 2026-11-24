@@ -1,7 +1,8 @@
 //! Builds a demo data directory: six characters of one player (a main, a capital alt, a logistics alt, a hauler, a
 //! mid-skilled alt and a new one) with skills, half a year of contracts, four months of wallet journal and market
-//! transactions (ratting, missions, mining, PI, trading, hauling, SP farming), and a doctrine library with groups and
-//! SIGs.
+//! transactions (ratting, missions, mining, PI, trading, hauling, SP farming), five months of kills and losses
+//! (some shared between the characters, some older than ESI's 90 days, so only in the archive), and a doctrine
+//! library with groups and SIGs.
 //! For UI testing and screenshots, never for a real data directory.
 //!
 //!     cargo run -p podstack-core --example demo_data -- <empty data dir> [cache dir]
@@ -18,10 +19,12 @@ use podstack_core::domains::info::{Alliance, Corporation, Info};
 use podstack_core::domains::skills::{Attributes, QueueEntry, Skill, SkillsData};
 use podstack_core::domains::wallet::{JournalData, JournalEntry, Transaction, TransactionsData};
 use podstack_core::features::contracts::{Archive, ArchivedContract, Valuation};
+use podstack_core::domains::social::{FinalBlow, KillVictim, Killmail, KillmailsData, KILLMAIL_LIMIT};
 use podstack_core::features::doctrines::{self, Doctrine, DoctrineDoc, Group};
-use podstack_core::sde::{MARKET, SKILLS};
+use podstack_core::features::killboard::{self as kb, ArchivedKill, Attacker, EsiKillmail, KillItem, Victim};
+use podstack_core::sde::{MAP, MARKET, SKILLS};
 use podstack_core::universe::Place;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 const CHARS: [(i64, &str, Profile); 6] = [
@@ -704,6 +707,8 @@ async fn main() {
         add(c, None, "c:90000001".into(), now - Duration::hours(2));
     }
     std::fs::write(dir.join("contracts_archive.json"), serde_json::to_string(&archive).unwrap()).unwrap();
+    let kills = killmails(&mut rng, now);
+    std::fs::write(dir.join(format!("{}.json", kb::DOC)), serde_json::to_string(&kills).unwrap()).unwrap();
 
     // characters
     for (id, name, profile) in CHARS {
@@ -757,6 +762,7 @@ async fn main() {
         let slots = listed.iter().filter(|k| k.issuer_id == id && !k.is_completed()).count() as u32;
         c.contracts = Some(ContractsData { contracts: listed, slots_used: slots });
         c.corp_contracts = Some(ContractsData::default());
+        c.killmails = Some(kill_log(&kills, id, now));
         std::fs::write(dir.join("characters").join(format!("{id}.json")), serde_json::to_string(&c).unwrap()).unwrap();
     }
 
@@ -785,7 +791,13 @@ async fn main() {
     add_assets(&dir, &doc, &[jita, amarr, dodixie, rens]);
     add_accounts(&dir);
     core.universe.flush();
-    println!("demo data written to {} ({} contracts, {} doctrine fits)", dir.display(), archive.contracts.len(), doc.fit_count());
+    println!(
+        "demo data written to {} ({} contracts, {} killmails, {} doctrine fits)",
+        dir.display(),
+        archive.contracts.len(),
+        kills.kills.len(),
+        doc.fit_count()
+    );
 }
 
 /// The rack a module goes in, guessed from its name: the demo's fits carry no slot data, and the assets view sorts
@@ -802,4 +814,343 @@ fn slot_rack(name: &str) -> &'static str {
     } else {
         "LoSlot"
     }
+}
+
+// ---------- kills and losses ----------
+
+const ENEMY_ALLIANCES: [(i64, &str); 3] = [(99000201, "Crimson Tide Coalition"), (99000202, "Low Orbit Syndicate"), (99000203, "Void Runners")];
+/// (id, name, alliance)
+const ENEMY_CORPS: [(i64, &str, Option<i64>); 6] = [
+    (98000201, "Red Sky Raiders", Some(99000201)),
+    (98000202, "Ember Fleet", Some(99000201)),
+    (98000203, "Tama Toll Collectors", Some(99000202)),
+    (98000204, "Gatecamp Gourmets", Some(99000202)),
+    (98000205, "Hole Dwellers", Some(99000203)),
+    (98000206, "Solo Wolves", None),
+];
+const NPC_CORP: (i64, &str) = (1000135, "Serpentis Corporation");
+/// Friendly pilots of the user's alliance who fly with them.
+const FRIENDS: [(i64, &str); 4] = [(95100001, "Aren Hollow"), (95100002, "Bex Calder"), (95100003, "Cyl Darrow"), (95100004, "Dova Rinn")];
+
+/// Ships each character flies to fights, by name.
+fn hulls(id: i64) -> &'static [&'static str] {
+    match id {
+        90000001 => &["Ishtar", "Loki", "Sabre", "Vagabond", "Zealot"],
+        90000002 => &["Revelation", "Guardian", "Harbinger"],
+        90000003 => &["Guardian", "Scimitar"],
+        90000004 => &["Iteron Mark V", "Bustard", "Orca"],
+        90000005 => &["Caracal", "Drake", "Hurricane", "Thrasher", "Rifter"],
+        _ => &["Rifter", "Venture", "Kestrel"],
+    }
+}
+const ENEMY_HULLS: [&str; 18] = [
+    "Rifter", "Merlin", "Incursus", "Punisher", "Thrasher", "Catalyst", "Caracal", "Vexor", "Thorax", "Rupture", "Drake", "Hurricane",
+    "Brutix", "Stratios", "Vagabond", "Cerberus", "Sabre", "Orca",
+];
+/// (module name, price, first inventory flag of its rack: 11 low, 19 mid, 27 high, 92 rig)
+const MODULES: [(&str, f64, i64); 14] = [
+    ("Damage Control II", 800e3, 11),
+    ("Warp Scrambler II", 1.2e6, 19),
+    ("Stasis Webifier II", 1.5e6, 19),
+    ("Medium Shield Extender II", 2.1e6, 19),
+    ("Multispectrum Shield Hardener II", 1.4e6, 19),
+    ("5MN Microwarpdrive II", 3.4e6, 19),
+    ("10MN Afterburner II", 2.2e6, 19),
+    ("Gyrostabilizer II", 1.1e6, 11),
+    ("Magnetic Field Stabilizer II", 1.0e6, 11),
+    ("Ballistic Control System II", 1.3e6, 11),
+    ("Heavy Missile Launcher II", 3.0e6, 27),
+    ("Medium Core Defense Field Extender I", 1.6e6, 92),
+    ("Hobgoblin II", 400e3, 87),
+    ("Nanite Repair Paste", 25e3, 5),
+];
+
+fn type_id(name: &str) -> Option<i64> {
+    MARKET.by_name(name).map(|t| t.id)
+}
+
+/// A rough hull price: the demo has no market, and classes are what matter for the breakdowns.
+fn hull_price(name: &str) -> f64 {
+    match name {
+        "Rifter" | "Merlin" | "Incursus" | "Punisher" | "Kestrel" | "Venture" => 500e3,
+        "Thrasher" | "Catalyst" => 1.5e6,
+        "Caracal" | "Vexor" | "Thorax" | "Rupture" => 14e6,
+        "Drake" | "Hurricane" | "Brutix" | "Harbinger" => 55e6,
+        "Iteron Mark V" => 4e6,
+        "Bustard" => 180e6,
+        "Orca" => 900e6,
+        "Stratios" => 260e6,
+        "Vagabond" | "Cerberus" | "Ishtar" | "Zealot" => 230e6,
+        "Sabre" => 65e6,
+        "Loki" => 420e6,
+        "Guardian" => 260e6,
+        "Scimitar" => 240e6,
+        "Revelation" => 3.2e9,
+        _ => 10e6,
+    }
+}
+
+/// Five months of fights: kills (solo, small gangs, several of the user's characters on one), losses to the enemy
+/// alliances, a freighter-style gank of the hauler, and the new character dying to rats. Valued the way PodStack
+/// values them, with the demo's own prices.
+fn killmails(rng: &mut Rng, now: DateTime<Utc>) -> kb::Archive {
+    let mut a = kb::Archive::default();
+    let mut prices: HashMap<i64, f64> = HashMap::new();
+    for (n, p, _) in MODULES {
+        if let Some(t) = type_id(n) {
+            prices.insert(t, p);
+            a.names.insert(t, n.into());
+        }
+    }
+    for n in ENEMY_HULLS.iter().chain(CHARS.iter().flat_map(|c| hulls(c.0).iter())) {
+        if let Some(t) = type_id(n) {
+            prices.insert(t, hull_price(n));
+            a.names.insert(t, n.to_string());
+        }
+    }
+    for (id, name, _) in CHARS {
+        a.names.insert(id, name.into());
+    }
+    a.names.insert(CORP.0, CORP.1.into());
+    a.names.insert(ALLIANCE.0, ALLIANCE.1.into());
+    a.names.insert(NPC_CORP.0, NPC_CORP.1.into());
+    for (id, n) in ENEMY_ALLIANCES.iter().chain(FRIENDS.iter()) {
+        a.names.insert(*id, n.to_string());
+    }
+    for (id, n, _) in ENEMY_CORPS {
+        a.names.insert(id, n.into());
+    }
+    let first = ["Ash", "Brakk", "Cael", "Dren", "Esk", "Fyr", "Gale", "Hask", "Irov", "Jace", "Kor", "Lune", "Mott", "Nyx", "Orr", "Pike", "Quill", "Rook"];
+    let last = ["Varn", "Ostrel", "Kade", "Morrow", "Thane", "Vos", "Rell", "Sorn", "Dacre"];
+    // (pilot id, corporation)
+    let enemies: Vec<(i64, usize)> = (0..36)
+        .map(|i| {
+            let id = 96000000 + i as i64;
+            a.names.insert(id, format!("{} {}", first[i % first.len()], last[(i * 7 / 3) % last.len()]));
+            (id, i % ENEMY_CORPS.len())
+        })
+        .collect();
+    // (system id, name, security, region id, region name)
+    let mut systems: Vec<(i64, String, f64, i64, String)> = ["Amamake", "Tama", "Rancer", "Old Man Star", "EC-P8R", "1DQ1-A", "M-OEE8", "HED-GP", "Niarja", "Uedama", "Jita"]
+        .iter()
+        .filter_map(|n| MAP.search_systems(n, 1).into_iter().next())
+        .map(|s| (s.id, s.name.clone(), s.display_security(), s.region, MAP.region_name(s.region).unwrap_or("").to_string()))
+        .collect();
+    systems.push((31000005, "Thera".into(), -1.0, 11000031, "G-R00031".into()));
+    for s in &systems {
+        a.names.insert(s.0, s.1.clone());
+    }
+
+    let fighters = [90000001i64, 90000002, 90000003, 90000005];
+    let mut id = 131_000_000i64;
+    let mut add = |a: &mut kb::Archive, rng: &mut Rng, t: DateTime<Utc>, sys: usize, victim: Victim, attackers: Vec<Attacker>, mine: &[i64]| {
+        id += rng.range(1, 40);
+        let (system, name, sec, region, region_name) = systems[sys.min(systems.len() - 1)].clone();
+        let mail = EsiKillmail { killmail_id: id, killmail_time: t, solar_system_id: system, victim, attackers, war_id: None };
+        let value = kb::value(&mail, &prices, t);
+        a.kills.insert(
+            id,
+            ArchivedKill {
+                mail,
+                hash: format!("{:x}", rng.next()),
+                system: name,
+                security: Some(sec),
+                region_id: Some(region),
+                region: Some(region_name),
+                seen_by: mine.iter().copied().collect(),
+                first_seen: t,
+                value: Some(value),
+            },
+        );
+    };
+    let fit = |rng: &mut Rng, ship: &str| -> Vec<KillItem> {
+        let mut items = Vec::new();
+        let mut used: HashMap<i64, i64> = HashMap::new();
+        for _ in 0..rng.range(4, 9) {
+            let (name, _, rack) = MODULES[rng.range(0, MODULES.len() as i64 - 2) as usize];
+            let Some(t) = type_id(name) else { continue };
+            let slot = used.entry(rack).or_default();
+            let flag = rack + *slot;
+            *slot += 1;
+            let dropped = rng.range(0, 3) == 0;
+            items.push(KillItem {
+                item_type_id: t,
+                flag,
+                quantity_destroyed: (!dropped).then_some(1),
+                quantity_dropped: dropped.then_some(1),
+                ..Default::default()
+            });
+        }
+        if let Some(t) = type_id("Hobgoblin II").filter(|_| matches!(ship, "Vexor" | "Ishtar" | "Stratios" | "Brutix")) {
+            items.push(KillItem { item_type_id: t, flag: 87, quantity_destroyed: Some(rng.range(2, 6)), quantity_dropped: Some(rng.range(0, 3)), ..Default::default() });
+        }
+        if let Some(t) = type_id("Nanite Repair Paste") {
+            items.push(KillItem { item_type_id: t, flag: 5, quantity_dropped: Some(rng.range(10, 120)), ..Default::default() });
+        }
+        items
+    };
+    let me = |c: i64, ship: &str, dmg: i64| Attacker {
+        character_id: Some(c),
+        corporation_id: Some(CORP.0),
+        alliance_id: Some(ALLIANCE.0),
+        ship_type_id: type_id(ship),
+        weapon_type_id: type_id(ship),
+        damage_done: dmg,
+        security_status: 2.1,
+        ..Default::default()
+    };
+    let enemy = |e: (i64, usize), ship: &str, dmg: i64| Attacker {
+        character_id: Some(e.0),
+        corporation_id: Some(ENEMY_CORPS[e.1].0),
+        alliance_id: ENEMY_CORPS[e.1].2,
+        ship_type_id: type_id(ship),
+        weapon_type_id: type_id(ship),
+        damage_done: dmg,
+        security_status: -4.5,
+        ..Default::default()
+    };
+
+    for day in (0..150i64).rev() {
+        for _ in 0..rng.range(0, 4) {
+            // evenings, EVE time, mostly
+            let hour = if rng.range(0, 4) == 0 { rng.range(0, 24) } else { rng.range(17, 24) };
+            let t = now - chrono::Duration::days(day) - chrono::Duration::hours(now.timestamp() / 3600 % 24) + chrono::Duration::hours(hour)
+                + chrono::Duration::minutes(rng.range(0, 60));
+            if t > now {
+                continue;
+            }
+            let sys = if rng.range(0, 10) == 0 { systems.len() - 1 } else { rng.range(0, 8) as usize };
+            let squad: Vec<i64> = {
+                let n = [1, 1, 1, 2, 2, 3][rng.range(0, 6) as usize];
+                let mut v: Vec<i64> = Vec::new();
+                while v.len() < n {
+                    let c = fighters[rng.range(0, fighters.len() as i64) as usize];
+                    if !v.contains(&c) {
+                        v.push(c);
+                    }
+                }
+                v
+            };
+            let target = enemies[rng.range(0, enemies.len() as i64) as usize];
+            if rng.range(0, 5) > 0 {
+                // a kill
+                let ship = ENEMY_HULLS[rng.range(0, ENEMY_HULLS.len() as i64) as usize];
+                let mut attackers: Vec<Attacker> = squad.iter().map(|c| me(*c, hulls(*c)[rng.range(0, hulls(*c).len() as i64) as usize], rng.range(800, 9000))).collect();
+                if squad.len() > 1 || rng.range(0, 3) == 0 {
+                    for f in FRIENDS.iter().take(rng.range(0, 4) as usize) {
+                        attackers.push(Attacker {
+                            character_id: Some(f.0),
+                            corporation_id: Some(CORP.0),
+                            alliance_id: Some(ALLIANCE.0),
+                            ship_type_id: type_id("Hurricane"),
+                            damage_done: rng.range(200, 4000),
+                            ..Default::default()
+                        });
+                    }
+                }
+                let fb = rng.range(0, attackers.len() as i64) as usize;
+                attackers[fb].final_blow = true;
+                let damage = attackers.iter().map(|x| x.damage_done).sum();
+                let c = ENEMY_CORPS[target.1];
+                let victim = Victim {
+                    character_id: Some(target.0),
+                    corporation_id: Some(c.0),
+                    alliance_id: c.2,
+                    ship_type_id: type_id(ship).unwrap_or(587),
+                    damage_taken: damage,
+                    items: fit(rng, ship),
+                    ..Default::default()
+                };
+                add(&mut a, rng, t, sys, victim, attackers, &squad);
+            } else {
+                // a loss: one of the squad dies to a gang
+                let dead = squad[0];
+                let ship = hulls(dead)[rng.range(0, hulls(dead).len() as i64) as usize];
+                let gang = rng.range(1, 9) as usize;
+                let mut attackers: Vec<Attacker> = (0..gang)
+                    .map(|i| enemy(enemies[(rng.range(0, 12) as usize + i * 3 + target.1) % enemies.len()], ENEMY_HULLS[rng.range(0, 16) as usize], rng.range(500, 12000)))
+                    .collect();
+                if rng.range(0, 6) == 0 {
+                    attackers.push(Attacker { corporation_id: Some(NPC_CORP.0), damage_done: rng.range(100, 900), ..Default::default() });
+                }
+                attackers[0].final_blow = true;
+                let damage = attackers.iter().map(|x| x.damage_done).sum();
+                let victim = Victim {
+                    character_id: Some(dead),
+                    corporation_id: Some(CORP.0),
+                    alliance_id: Some(ALLIANCE.0),
+                    ship_type_id: type_id(ship).unwrap_or(587),
+                    damage_taken: damage,
+                    items: fit(rng, ship),
+                    ..Default::default()
+                };
+                add(&mut a, rng, t, sys, victim, attackers, &[dead]);
+            }
+        }
+    }
+    // the hauler ganked twice in Uedama, the new character's Venture lost to rats
+    let uedama = systems.iter().position(|s| s.1 == "Uedama").unwrap_or(0);
+    for (days, who, ship) in [(9, 90000004, "Bustard"), (64, 90000004, "Iteron Mark V"), (3, 90000006, "Venture"), (40, 90000006, "Rifter")] {
+        let t = now - chrono::Duration::days(days) - chrono::Duration::hours(3);
+        let attackers: Vec<Attacker> = if who == 90000006 {
+            vec![Attacker { corporation_id: Some(NPC_CORP.0), damage_done: 2400, final_blow: true, ..Default::default() }]
+        } else {
+            (0..12).map(|i| enemy(enemies[(i * 5 + 2) % enemies.len()], "Catalyst", 3000 + i as i64 * 400)).enumerate().map(|(i, mut x)| {
+                x.final_blow = i == 0;
+                x
+            }).collect()
+        };
+        let mut items = fit(rng, ship);
+        if let Some(t) = type_id("Medium Shield Extender II") {
+            items.push(KillItem { item_type_id: t, flag: 5, quantity_destroyed: Some(40), quantity_dropped: Some(35), ..Default::default() });
+        }
+        let victim = Victim {
+            character_id: Some(who),
+            corporation_id: Some(CORP.0),
+            alliance_id: Some(ALLIANCE.0),
+            ship_type_id: type_id(ship).unwrap_or(587),
+            damage_taken: 50_000,
+            items,
+            ..Default::default()
+        };
+        add(&mut a, rng, t, if who == 90000006 { 3 } else { uedama }, victim, attackers, &[who]);
+    }
+    a
+}
+
+/// A character's Kill Log tab: its newest mails within ESI's 90 days, as the domain fetch builds them.
+fn kill_log(a: &kb::Archive, id: i64, now: DateTime<Utc>) -> KillmailsData {
+    let me: HashSet<i64> = HashSet::from([id]);
+    let name = |i: Option<i64>| i.and_then(|i| a.name(i).map(str::to_string));
+    let kills: Vec<Killmail> = kb::entries(a, &me, Some(now - Duration::days(90)))
+        .into_iter()
+        .take(KILLMAIL_LIMIT)
+        .filter_map(|e| {
+            let k = a.get(e.id)?;
+            let v = &k.mail.victim;
+            let fb = k.mail.final_blow();
+            Some(Killmail {
+                killmail_id: e.id,
+                hash: k.hash.clone(),
+                time: e.time,
+                loss: e.loss,
+                victim: KillVictim {
+                    character_id: v.character_id,
+                    corporation_id: v.corporation_id,
+                    name: a.victim_name(k),
+                    corporation: name(v.corporation_id),
+                    alliance: name(v.alliance_id),
+                    ship_type_id: v.ship_type_id,
+                    ship: a.type_name(v.ship_type_id),
+                    damage_taken: v.damage_taken,
+                },
+                final_blow: FinalBlow { name: fb.map(|x| a.attacker_name(x)).unwrap_or_else(|| "NPC".into()), ship: fb.and_then(|x| x.ship_type_id).map(|s| a.type_name(s)) },
+                attackers: k.mail.attackers.len(),
+                system_id: k.mail.solar_system_id,
+                system: k.system.clone(),
+                security: k.security,
+            })
+        })
+        .collect();
+    KillmailsData { kills }
 }

@@ -7,6 +7,7 @@ pub mod contracts;
 pub mod doctrines;
 pub mod fit_planner;
 pub mod industry;
+pub mod kills;
 pub mod market;
 pub mod market_orders;
 pub mod overview;
@@ -32,6 +33,7 @@ pub fn build(ctx: &Ctx, route: Route) -> Page {
         Route::AssetSearch => asset_search::build(ctx),
         Route::Market => market::build(ctx),
         Route::Wallet => wallet::build(ctx),
+        Route::Kills => kills::build(ctx),
         Route::Industry => industry::build(ctx),
         Route::Planets => planets::build(ctx),
         Route::Settings => settings::build(ctx),

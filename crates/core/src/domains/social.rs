@@ -8,7 +8,7 @@ use super::{Cx, DomainResult, DomainSpec};
 use crate::domain;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub const DOMAINS: &[DomainSpec] = &[
     domain!("loyalty_points", "Loyalty Points", 3600, refresh_loyalty),
@@ -425,42 +425,43 @@ fn latest(mut recent: Vec<RawRecent>) -> Vec<RawRecent> {
     recent
 }
 
-// A killmail never changes, so ones already loaded are kept as they are and only new ones are fetched.
+// Every killmail the character's recent list shows goes into `features::killboard`'s archive (fetched whole once,
+// whichever of the user's characters lists it first). The Kill Log tab's latest ones are built from the archive, and
+// ones already loaded are kept as they are: a killmail never changes.
 async fn refresh_killmails(cx: &Cx) -> DomainResult {
-    let recent: Vec<RawRecent> =
+    use crate::features::killboard;
+    let mut all: Vec<RawRecent> =
         cx.get(cx.char_path("killmails/recent")).scope("esi-killmails.read_killmails.v1").all_pages().await?;
-    let recent = latest(recent);
+    all.sort_by_key(|r| std::cmp::Reverse(r.killmail_id));
+    let listed: Vec<i64> = all.iter().map(|r| r.killmail_id).collect();
+    let archived = killboard::archive_snapshot();
+    let wanted: Vec<(i64, String)> = all
+        .iter()
+        .filter(|r| !archived.contains(r.killmail_id))
+        .take(killboard::FETCH_BATCH)
+        .map(|r| (r.killmail_id, r.killmail_hash.clone()))
+        .collect();
+    let (new, names) = killboard::fetch_new(cx, &wanted).await;
+    killboard::archive(&cx.core, cx.id, &listed, new, names);
+    killboard::value_missing(cx).await;
+
+    let archived = killboard::archive_snapshot();
     let mut known: HashMap<i64, Killmail> =
         cx.prev.killmails.as_ref().map(|k| k.kills.iter().map(|k| (k.killmail_id, k.clone())).collect()).unwrap_or_default();
-
-    let new: Vec<&RawRecent> = recent.iter().filter(|r| !known.contains_key(&r.killmail_id)).collect();
-    let fetched: Vec<(RawKillmail, String)> = futures::future::join_all(new.iter().map(|r| async move {
-        cx.esi()
-            .get(format!("killmails/{}/{}", r.killmail_id, r.killmail_hash))
-            .json::<RawKillmail>()
-            .await
-            .ok()
-            .map(|km| (km, r.killmail_hash.clone()))
-    }))
-    .await
-    .into_iter()
-    .flatten()
-    .collect();
-
-    let names = cx.universe().names(cx.esi(), fetched.iter().flat_map(|(km, _)| km.name_ids()).collect::<Vec<_>>()).await;
-    let systems: HashSet<i64> = fetched.iter().map(|(km, _)| km.solar_system_id).collect();
-    let mut security = HashMap::new();
-    for s in systems {
-        if let Ok(info) = cx.universe().system(cx.esi(), s).await {
-            security.insert(s, info.display_security());
-        }
-    }
-    for (km, hash) in fetched {
-        let mut k = build_killmail(km, hash, cx.id, &names);
-        k.security = security.get(&k.system_id).copied();
-        known.insert(k.killmail_id, k);
-    }
-    let kills: Vec<Killmail> = recent.iter().filter_map(|r| known.remove(&r.killmail_id)).collect();
+    let kills: Vec<Killmail> = latest(all)
+        .iter()
+        .filter_map(|r| {
+            known.remove(&r.killmail_id).or_else(|| {
+                let a = archived.get(r.killmail_id)?;
+                let raw: RawKillmail = serde_json::to_value(&a.mail).ok().and_then(|v| serde_json::from_value(v).ok())?;
+                let names: HashMap<i64, String> =
+                    raw.name_ids().into_iter().filter_map(|i| archived.name(i).map(|n| (i, n.to_string()))).collect();
+                let mut k = build_killmail(raw, a.hash.clone(), cx.id, &names);
+                k.security = a.security;
+                Some(k)
+            })
+        })
+        .collect();
     Ok(Box::new(move |c| c.killmails = Some(KillmailsData { kills })))
 }
 
@@ -750,6 +751,18 @@ mod tests {
         // seen from the attacker's side it's a kill
         let km: RawKillmail = serde_json::from_str(KILLMAIL).unwrap();
         assert!(!build_killmail(km, "abc".into(), 2112000001, &n).loss);
+    }
+
+    #[test]
+    fn archived_killmail_rebuilds_the_tab_record() {
+        // the Kill Log tab builds its records from the archive's copy of ESI's mail
+        let mail: crate::features::killboard::EsiKillmail = serde_json::from_str(KILLMAIL).unwrap();
+        let raw: RawKillmail = serde_json::from_value(serde_json::to_value(&mail).unwrap()).unwrap();
+        let k = build_killmail(raw, "abc".into(), 95465499, &HashMap::new());
+        assert!(k.loss);
+        assert_eq!(k.attackers, 2);
+        assert_eq!(k.victim.ship_type_id, 587);
+        assert_eq!(mail.final_blow().and_then(|a| a.corporation_id), Some(1000125));
     }
 
     #[test]

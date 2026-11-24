@@ -604,7 +604,7 @@ pub fn analyze(lines: &[Line], chars: &[i64], since: Option<DateTime<Utc>>, now:
 }
 
 /// Days for up to three months, then weeks for up to a year, then months: about 100 bars at most.
-fn bucket_size(start: DateTime<Utc>, now: DateTime<Utc>) -> BucketSize {
+pub(crate) fn bucket_size(start: DateTime<Utc>, now: DateTime<Utc>) -> BucketSize {
     let days = (now - start).num_days();
     if days <= 92 {
         BucketSize::Day
@@ -615,7 +615,7 @@ fn bucket_size(start: DateTime<Utc>, now: DateTime<Utc>) -> BucketSize {
     }
 }
 
-fn bucket_start(d: NaiveDate, size: BucketSize) -> NaiveDate {
+pub(crate) fn bucket_start(d: NaiveDate, size: BucketSize) -> NaiveDate {
     match size {
         BucketSize::Day => d,
         BucketSize::Week => d - Duration::days(d.weekday().num_days_from_monday() as i64),
@@ -623,7 +623,7 @@ fn bucket_start(d: NaiveDate, size: BucketSize) -> NaiveDate {
     }
 }
 
-fn next_bucket(d: NaiveDate, size: BucketSize) -> NaiveDate {
+pub(crate) fn next_bucket(d: NaiveDate, size: BucketSize) -> NaiveDate {
     match size {
         BucketSize::Day => d + Duration::days(1),
         BucketSize::Week => d + Duration::days(7),
