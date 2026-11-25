@@ -256,11 +256,16 @@ pub(crate) fn chip_row(children: Vec<gtk::Widget>) -> gtk::FlowBox {
 
 /// "Skill Name IV" list of levels to train with their times, and the running total.
 pub(crate) fn levels_list(levels: &[PlannedLevel]) -> gtk::Widget {
+    levels_list_noted(levels, &[])
+}
+
+/// [`levels_list`] with a note under each level (`notes[i]` for `levels[i]`; missing or empty means none).
+pub(crate) fn levels_list_noted(levels: &[PlannedLevel], notes: &[String]) -> gtk::Widget {
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::None);
     list.add_css_class("m3-list");
     let mut elapsed = chrono::Duration::zero();
-    for l in levels {
+    for (i, l) in levels.iter().enumerate() {
         elapsed += l.time;
         let times = w::vbox(0);
         let t = w::line(&fmt::duration(l.time, 3), &["body-medium", "numeric"]);
@@ -269,7 +274,8 @@ pub(crate) fn levels_list(levels: &[PlannedLevel]) -> gtk::Widget {
         let d = w::line(&format!("done in {}", fmt::duration(elapsed, 2)), &["body-small", "dim", "numeric"]);
         d.set_xalign(1.0);
         times.append(&d);
-        let row = w::list_row(None, &format!("{} {}", l.name(), roman(l.level)), None, Some(times.upcast_ref()));
+        let note = notes.get(i).map(String::as_str).filter(|n| !n.is_empty());
+        let row = w::list_row(None, &format!("{} {}", l.name(), roman(l.level)), note, Some(times.upcast_ref()));
         row.set_margin_start(0);
         list.append(&row);
     }

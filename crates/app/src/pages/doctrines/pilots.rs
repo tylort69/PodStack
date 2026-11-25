@@ -8,6 +8,7 @@ use crate::pages::skill_browser::shared as browser;
 use crate::widgets::{self as w, Btn, Status};
 use gtk::prelude::*;
 use podstack_core::features::doctrines::{self as dc, Doctrine, DoctrineDoc, DoctrineFit, Readiness, Standing};
+use podstack_core::features::fitting;
 use podstack_core::{config, fmt, Character};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -277,7 +278,127 @@ fn pilot_card(ctx: &Ctx, c: &Arc<Character>, s: &dc::PilotStandings, doctrines: 
         card.append(&section_label(if s.ready.is_empty() && s.hull_only.is_empty() { "CLOSEST TO TRAIN" } else { "NEXT TO TRAIN" }));
         card.append(&train_list(ctx, c, &s.missing));
     }
+    let todo: Vec<&Standing> = s.hull_only.iter().chain(&s.missing).collect();
+    if !todo.is_empty() {
+        card.append(&section_label("SKILL PLANS"));
+        card.append(&plans(ctx, c, &todo));
+    }
     card.upcast()
+}
+
+/// Skill plans for the fits a character can't fly yet: all of them with the skills most fits need first, and each
+/// doctrine's together. (Each fit's own plan is on its row above.)
+fn plans(ctx: &Ctx, c: &Arc<Character>, todo: &[&Standing]) -> gtk::Widget {
+    let b = w::vbox(0);
+    let fits: Vec<DoctrineFit> = todo.iter().map(|s| s.fit.clone()).collect();
+    let refs: Vec<&DoctrineFit> = fits.iter().collect();
+    let most = dc::plan_most_fits(c, &refs);
+    let n = todo.len();
+    let time = most.iter().fold(chrono::Duration::zero(), |t, l| t + l.level.time);
+    b.append(&plan_row(
+        w::icon("trending_up").upcast_ref(),
+        "Most fits first",
+        &format!("All {n} fit{} not flyable yet, the skills most of them need first", plural(n)),
+        time,
+        &most_fits_buttons(ctx, c, fits),
+    ));
+
+    // the doctrines, in the order their first fit comes
+    let mut by_doctrine: Vec<(&Standing, Vec<DoctrineFit>)> = Vec::new();
+    for t in todo {
+        match by_doctrine.iter_mut().find(|(first, _)| first.doctrine.id == t.doctrine.id) {
+            Some((_, v)) => v.push(t.fit.clone()),
+            None => by_doctrine.push((t, vec![t.fit.clone()])),
+        }
+    }
+    let rows: Vec<gtk::Widget> = by_doctrine
+        .into_iter()
+        .map(|(first, fits)| {
+            let refs: Vec<&DoctrineFit> = fits.iter().collect();
+            let time = fitting::total_time(&dc::plan_for_all(c, &refs));
+            let total = first.doctrine.fits.len();
+            let k = fits.len();
+            let path = w::markup(&doctrine_markup(&first.path, first.doctrine), &["doc-doctrine-path"]);
+            path.set_ellipsize(pango::EllipsizeMode::End);
+            path.set_wrap(false);
+            let buttons = plan_buttons(ctx, c, &first.doctrine.name, move |c| {
+                let refs: Vec<&DoctrineFit> = fits.iter().collect();
+                dc::plan_for_all(c, &refs)
+            });
+            plan_row(path.upcast_ref(), "", &format!("{k} of {total} fit{} to go", plural(total)), time, &buttons)
+        })
+        .collect();
+    let mut rows = rows.into_iter();
+    for r in rows.by_ref().take(SHOWN) {
+        b.append(&r);
+    }
+    let rest: Vec<gtk::Widget> = rows.collect();
+    if !rest.is_empty() {
+        let more = w::vbox(0);
+        let n = rest.len();
+        for r in rest {
+            more.append(&r);
+        }
+        b.append(&common::more_expander(n, &more));
+    }
+    b.upcast()
+}
+
+/// A plan's row: what it's for (an icon and a title, or a doctrine's path), a line under it, the training time, and
+/// its buttons.
+fn plan_row(lead: &gtk::Widget, title: &str, sub: &str, time: chrono::Duration, buttons: &impl IsA<gtk::Widget>) -> gtk::Widget {
+    let row = w::hbox(12);
+    row.add_css_class("doc-train-row");
+    let texts = w::vbox(2);
+    texts.set_hexpand(true);
+    texts.set_valign(gtk::Align::Center);
+    if title.is_empty() {
+        texts.append(lead);
+    } else {
+        lead.set_valign(gtk::Align::Center);
+        row.append(lead);
+        texts.append(&w::line(title, &["body-large"]));
+    }
+    texts.append(&w::line(sub, &["body-small", "dim"]));
+    row.append(&texts);
+    row.append(&w::line(&fmt::duration(time, 2), &["body-medium", "numeric"]));
+    row.append(buttons);
+    row.upcast()
+}
+
+/// Copy, and a dialog showing how many fits each level helps, for the most-fits-first plan.
+fn most_fits_buttons(ctx: &Ctx, c: &Arc<Character>, fits: Vec<DoctrineFit>) -> gtk::Box {
+    let fits = Rc::new(fits);
+    let row = w::hbox(4);
+    row.set_valign(gtk::Align::Center);
+    let levels = |c: &Character, fits: &[DoctrineFit]| {
+        let refs: Vec<&DoctrineFit> = fits.iter().collect();
+        dc::plan_most_fits(c, &refs)
+    };
+    let copy = w::icon_button("content_copy", "Copy skill plan (EVE's format, for the Skills window's plan import)");
+    let (ctx2, c2, f2) = (ctx.clone(), c.clone(), fits.clone());
+    copy.connect_clicked(move |_| {
+        let plan: Vec<_> = levels(&c2, &f2).into_iter().map(|l| l.level).collect();
+        w::copy_to_clipboard(&ctx2, &dc::eve_plan_text(&plan));
+    });
+    row.append(&copy);
+    let show = w::icon_button("playlist_add", "See the plan, or add it to a skill plan\u{2026}");
+    let (ctx2, c2) = (ctx.clone(), c.clone());
+    show.connect_clicked(move |_| {
+        let shared = levels(&c2, &fits);
+        let notes: Vec<String> = shared.iter().map(|l| format!("Needed by {} fit{}", l.fits, plural(l.fits))).collect();
+        let plan: Vec<_> = shared.into_iter().map(|l| l.level).collect();
+        common::plan_dialog_noted(
+            &ctx2,
+            &c2,
+            "Most fits first",
+            &plan,
+            Some(&format!("Every doctrine fit {} can't fly yet, the skills most of them need first.", c2.name())),
+            &notes,
+        );
+    });
+    row.append(&show);
+    row
 }
 
 fn plural(n: usize) -> &'static str {

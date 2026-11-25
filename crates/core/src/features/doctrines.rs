@@ -613,6 +613,32 @@ pub fn plan_for_all(c: &Character, fits: &[&DoctrineFit]) -> Vec<PlannedLevel> {
     fitting::plan_levels(c, &wanted.into_iter().collect::<Vec<_>>())
 }
 
+/// A level of a "most fits first" plan, with how many of the fits need it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SharedLevel {
+    pub level: PlannedLevel,
+    pub fits: usize,
+}
+
+/// Every level a character needs for `fits`, the levels most of them need first: the first skills help towards as
+/// many fits as possible, and each one further down towards fewer. Prerequisites still come first, and that costs
+/// nothing: every fit that needs a level also needs its prerequisites and lower levels, so those count at least as
+/// many fits, and a stable sort by count keeps them ahead.
+pub fn plan_most_fits(c: &Character, fits: &[&DoctrineFit]) -> Vec<SharedLevel> {
+    let mut seen = BTreeSet::new();
+    let fits: Vec<&DoctrineFit> = fits.iter().copied().filter(|f| seen.insert(f.id.clone())).collect();
+    let mut counts: BTreeMap<(i64, u8), usize> = BTreeMap::new();
+    for f in &fits {
+        for l in crate::training::missing_levels(c, &f.all_skills()) {
+            *counts.entry(l).or_default() += 1;
+        }
+    }
+    let mut out: Vec<SharedLevel> =
+        plan_for_all(c, &fits).into_iter().map(|l| SharedLevel { fits: counts.get(&(l.skill_id, l.level)).copied().unwrap_or(0), level: l }).collect();
+    out.sort_by_key(|l| std::cmp::Reverse(l.fits));
+    out
+}
+
 /// A plan as EVE's skill plan text (the Skills window's clipboard format, which its import reads back).
 pub fn eve_plan_text(levels: &[PlannedLevel]) -> String {
     levels.iter().map(|l| format!("{} {}", fitting::skill_name(l.skill_id), l.level)).collect::<Vec<_>>().join("\r\n")
@@ -958,6 +984,18 @@ mod tests {
         let text = eve_plan_text(&plan_for_all(&Character { skills: Some(skill(0)), ..Character::new(2) }, &[&fit]));
         // prerequisites come first
         assert!(text.starts_with("Spaceship Command 1\r\nMinmatar Frigate 1") && text.ends_with("Minmatar Frigate 3"), "{text}");
+    }
+
+    #[test]
+    fn most_fits_first() {
+        // Minmatar Frigate III for one fit, I for another, Gallente Frigate I for a third (and the first twice)
+        let fit = |id: &str, skills: &[(i64, u8)]| DoctrineFit { id: id.into(), items: vec![item(1, "Hull", "Ship", 1, skills)], ..Default::default() };
+        let (a, b, g) = (fit("a", &[(3329, 3)]), fit("b", &[(3329, 1)]), fit("g", &[(3328, 1)]));
+        let c = Character { skills: Some(crate::domains::skills::SkillsData::default()), ..Character::new(1) };
+        let plan = plan_most_fits(&c, &[&a, &b, &g, &a]);
+        let got: Vec<(String, u8, usize)> = plan.iter().map(|l| (l.level.name(), l.level.level, l.fits)).collect();
+        let want = [("Spaceship Command", 1, 3), ("Minmatar Frigate", 1, 2), ("Gallente Frigate", 1, 1), ("Minmatar Frigate", 2, 1), ("Minmatar Frigate", 3, 1)];
+        assert_eq!(got, want.map(|(n, l, f)| (n.to_string(), l, f)));
     }
 }
 

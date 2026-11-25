@@ -92,6 +92,11 @@ pub fn plan_buttons(ctx: &Ctx, c: &Arc<Character>, title: &str, levels: impl Fn(
 
 /// The levels a character has to train for something, to copy for EVE or add to one of its PodStack plans.
 pub fn plan_dialog(ctx: &Ctx, c: &Character, title: &str, levels: &[PlannedLevel]) {
+    plan_dialog_noted(ctx, c, title, levels, None, &[]);
+}
+
+/// [`plan_dialog`] with a line about the plan under its total, and a note under each level.
+pub fn plan_dialog_noted(ctx: &Ctx, c: &Character, title: &str, levels: &[PlannedLevel], about: Option<&str>, notes: &[String]) {
     let (win, content, actions) = w::dialog(ctx, &format!("{title} \u{00b7} {}", c.name()), 520);
     let head = w::hbox(12);
     head.append(&w::avatar(&config::character_portrait(c.id, 64), 40));
@@ -101,11 +106,14 @@ pub fn plan_dialog(ctx: &Ctx, c: &Character, title: &str, levels: &[PlannedLevel
         &["body-large"],
     ));
     content.append(&head);
+    if let Some(a) = about {
+        content.append(&w::text(a, &["body-small", "dim"]));
+    }
     let list = gtk::ScrolledWindow::new();
     list.set_hscrollbar_policy(gtk::PolicyType::Never);
     list.set_propagate_natural_height(true);
     list.set_max_content_height(420);
-    list.set_child(Some(&browser::levels_list(levels)));
+    list.set_child(Some(&browser::levels_list_noted(levels, notes)));
     content.append(&list);
     content.append(&browser::add_to_plan_row(ctx, c.id, title, Some(title.to_string()), levels));
 
