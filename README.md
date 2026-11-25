@@ -104,6 +104,9 @@ For alliance pilots juggling several fleets and several characters.
 - **Fits in, fits out.** Paste fits from EVE's fitting window, Pyfa or any EFT text (several at once), EVE's XML
   export or DNA links. Copy any fit or a whole doctrine back as EFT, and share a group or your whole library with
   corp mates as one file.
+- **Doctrines from in-game fittings.** On request, read a character's saved fittings (or an export file) and make a
+  doctrine of each set whose names belong together, in a new group under Auto-generated, leaving your own as they
+  are. EVE doesn't let apps read corporation or alliance fittings, so save those to a character first.
 - **Who can fly what.** For every doctrine, which of your characters can fly each fit, which can only sit in the
   hull, and how long until the rest can.
 - **Skill plans in one click.** For any character and any fit (or a whole doctrine), copy the missing skills in

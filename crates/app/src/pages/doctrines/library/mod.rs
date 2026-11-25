@@ -16,6 +16,7 @@
 mod dialogs;
 mod doctrine;
 mod fit;
+mod generate;
 mod group;
 mod import;
 mod pilot;
@@ -485,7 +486,7 @@ fn welcome(lib: &Rc<Lib>) -> gtk::Box {
 
 /// Import and export for the whole library.
 fn library_menu(lib: &Rc<Lib>) -> gtk::MenuButton {
-    let (a, b, c, d) = (lib.clone(), lib.clone(), lib.clone(), lib.clone());
+    let (a, b, c, d, e) = (lib.clone(), lib.clone(), lib.clone(), lib.clone(), lib.clone());
     menu_button(
         Some("import_export"),
         Some("Import / export"),
@@ -493,6 +494,7 @@ fn library_menu(lib: &Rc<Lib>) -> gtk::MenuButton {
         vec![
             MenuItem::new("content_paste", "Paste fits…", move || import::paste_dialog(&a, None, None)),
             MenuItem::new("file_open", "Open a file…", move || import::open_file(&b, None)),
+            MenuItem::new("auto_awesome", "Doctrines from in-game fittings…", move || generate::open(&e)),
             MenuItem::Separator,
             MenuItem::new("save_alt", "Save the whole library…", move || {
                 let doc = c.doc();
