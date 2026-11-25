@@ -250,20 +250,26 @@ pub fn add_css(css: &'static str) {
 pub fn style_frame(win: &gtk::Window, scheme: &Scheme) {
     #[cfg(windows)]
     {
-        extern "C" {
-            fn gdk_win32_surface_get_handle(surface: *mut gdk::ffi::GdkSurface) -> isize;
-        }
-        use gtk::glib::translate::ToGlibPtr;
-        let Some(surface) = win.surface() else { return };
         let rgb = |role: &str| u32::from_str_radix(scheme.get(role).trim_start_matches('#').get(..6).unwrap_or("000000"), 16).unwrap_or(0);
-        // SAFETY: the surface is a live Win32 surface (GTK's only backend on Windows), so this returns its HWND.
-        let hwnd = unsafe { gdk_win32_surface_get_handle(surface.to_glib_none().0) };
-        if hwnd != 0 {
+        if let Some(hwnd) = hwnd(win) {
             podstack_core::platform::style_frame(hwnd, scheme.dark, rgb("surface"), rgb("on_surface"), rgb("outline_variant"));
         }
     }
     #[cfg(not(windows))]
     let _ = (win, scheme);
+}
+
+/// A realized window's Win32 `HWND`.
+#[cfg(windows)]
+pub fn hwnd(win: &gtk::Window) -> Option<isize> {
+    extern "C" {
+        fn gdk_win32_surface_get_handle(surface: *mut gdk::ffi::GdkSurface) -> isize;
+    }
+    use gtk::glib::translate::ToGlibPtr;
+    let surface = win.surface()?;
+    // SAFETY: the surface is a live Win32 surface (GTK's only backend on Windows), so this returns its HWND.
+    let hwnd = unsafe { gdk_win32_surface_get_handle(surface.to_glib_none().0) };
+    (hwnd != 0).then_some(hwnd)
 }
 
 /// The scheme in use (for widgets that draw with cairo, e.g. charts).

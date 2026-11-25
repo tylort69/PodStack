@@ -33,6 +33,39 @@ struct Shell {
     snack_timer: RefCell<Option<glib::SourceId>>,
 }
 
+/// GTK 4 on Windows doesn't follow size changes Windows makes itself (resizing by the frame, the maximize button,
+/// snapping), so it keeps its old default size and maximized state, and the next time anything in the window asks
+/// for a new size it puts the window back to those. Each time the surface lays out, this tells GTK what Windows
+/// has: the size as the new default, and whether the window is maximized. (GTK issue 5088.)
+#[cfg(windows)]
+fn keep_size(window: &gtk::ApplicationWindow) {
+    window.connect_realize(|win| {
+        let Some(surface) = win.surface() else { return };
+        let weak = win.downgrade();
+        surface.connect_layout(move |_, w, h| {
+            let Some(win) = weak.upgrade() else { return };
+            let Some(hwnd) = crate::theme::hwnd(win.upcast_ref()) else { return };
+            let (maximized, minimized) = podstack_core::platform::window_state(hwnd);
+            if minimized || win.is_fullscreen() {
+                return;
+            }
+            if maximized {
+                if !win.is_maximized() {
+                    win.maximize();
+                }
+                return;
+            }
+            // the size first, so a stale maximized state unmaximizes to this size rather than the old one
+            if w > 0 && h > 0 && win.default_size() != (w, h) {
+                win.set_default_size(w, h);
+            }
+            if win.is_maximized() {
+                win.unmaximize();
+            }
+        });
+    });
+}
+
 pub fn build(app: &gtk::Application, core: Arc<Core>) -> gtk::ApplicationWindow {
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -43,6 +76,8 @@ pub fn build(app: &gtk::Application, core: Arc<Core>) -> gtk::ApplicationWindow 
         .build();
     window.set_size_request(760, 520);
     window.connect_realize(|win| crate::theme::style_frame(win.upcast_ref(), &crate::theme::current()));
+    #[cfg(windows)]
+    keep_size(&window);
     if let Ok(t) = std::env::var("PODSTACK_DEBUG_WIDTHS") {
         debug_widths(&window, t.parse().unwrap_or(600));
     }

@@ -44,6 +44,13 @@ pub fn style_frame(hwnd: isize, dark: bool, caption: u32, text: u32, border: u32
     imp::style_frame(hwnd, dark, caption, text, border)
 }
 
+/// Whether the window `hwnd` (a Win32 `HWND`) is maximized and whether it's minimized, as Windows sees it. GTK 4
+/// misses some of these changes on Windows (it doesn't follow `WM_WINDOWPOSCHANGED`), so the app checks here. Always
+/// `(false, false)` on Linux.
+pub fn window_state(hwnd: isize) -> (bool, bool) {
+    imp::window_state(hwnd)
+}
+
 #[cfg(not(windows))]
 mod imp {
     use super::Instance;
@@ -73,6 +80,10 @@ mod imp {
     }
 
     pub fn style_frame(_hwnd: isize, _dark: bool, _caption: u32, _text: u32, _border: u32) {}
+
+    pub fn window_state(_hwnd: isize) -> (bool, bool) {
+        (false, false)
+    }
 }
 
 #[cfg(windows)]
@@ -183,5 +194,11 @@ mod imp {
         set(DWMWA_CAPTION_COLOR, colorref(caption));
         set(DWMWA_TEXT_COLOR, colorref(text));
         set(DWMWA_BORDER_COLOR, colorref(border));
+    }
+
+    pub fn window_state(hwnd: isize) -> (bool, bool) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, IsZoomed};
+        // SAFETY: both only read the window's state; a stale handle just answers false.
+        unsafe { (IsZoomed(hwnd as _) != 0, IsIconic(hwnd as _) != 0) }
     }
 }
