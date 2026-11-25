@@ -33,7 +33,7 @@ struct Gen {
 pub(super) fn open(lib: &Rc<Lib>) {
     let (win, content, actions) = w::dialog(&lib.ctx, "Doctrines from in-game fittings", 600);
     content.append(&w::text(
-        "Reads fittings and makes a doctrine of each set whose names belong together (\"INIT Muninn - DPS\" and \"INIT \
+        "Reads fittings and makes a doctrine of each set whose names belong together (\"ABC Muninn - DPS\" and \"ABC \
          Muninn - Logi\" make Muninn). They go into a new group under Auto-generated: nothing you have changes.",
         &["body-medium"],
     ));

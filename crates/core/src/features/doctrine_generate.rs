@@ -1,5 +1,5 @@
 //! Doctrines made from in-game fittings, on request: a character's saved fittings (ESI), or an EVE fittings export,
-//! grouped into doctrines by their names. Alliances name a doctrine's fits alike ("INIT Muninn - DPS", "INIT Muninn -
+//! grouped into doctrines by their names. Alliances name a doctrine's fits alike ("ABC Muninn - DPS", "ABC Muninn -
 //! Logi"), so the shared part of the names is the doctrine. ESI has no corporation or alliance fittings, only a
 //! character's own; alliance fits come in once a character saves them to its personal fittings, or through the
 //! fitting window's export.
@@ -74,7 +74,7 @@ fn words(s: &str) -> Vec<&str> {
 /// appear. A word prefix every name shares (the alliance's tag) is dropped; then a name with a separator belongs to
 /// the part before it, and one without to the longest run of leading words it shares with a different such name (or
 /// to its whole name when it shares none). Alliances reuse a name across hulls, so names equal to this one don't
-/// count. Last, a doctrine whose name only extends another's ("i.Standard Logi" and "i.Standard") joins that one.
+/// count. Last, a doctrine whose name only extends another's ("x.Mainline Logi" and "x.Mainline") joins that one.
 pub fn group_names(names: &[String]) -> Vec<(String, Vec<usize>)> {
     let all: Vec<Vec<&str>> = names.iter().map(|n| words(n)).collect();
     // the shared tag: leading words (case-insensitive) every name has, with something left after it in each
@@ -193,13 +193,13 @@ mod tests {
 
     #[test]
     fn groups_by_separator_after_the_tag() {
-        let got = shape(&["INIT Muninn - DPS", "INIT Muninn - Logi", "INIT Eagle - DPS", "init muninn - Links"]);
+        let got = shape(&["ABC Muninn - DPS", "ABC Muninn - Logi", "ABC Eagle - DPS", "abc muninn - Links"]);
         assert_eq!(got, [("Muninn".to_string(), vec![0, 1, 3]), ("Eagle".to_string(), vec![2])]);
     }
 
     #[test]
     fn groups_by_shared_words_without_separators() {
-        let got = shape(&["[INIT] Hurricane Fleet Issue DPS", "[INIT] Hurricane Fleet Issue Logi", "[INIT] Ferox Navy", "[INIT] Muninn"]);
+        let got = shape(&["[ABC] Hurricane Fleet Issue DPS", "[ABC] Hurricane Fleet Issue Logi", "[ABC] Ferox Navy", "[ABC] Muninn"]);
         assert_eq!(
             got,
             [("Hurricane Fleet Issue".to_string(), vec![0, 1]), ("Ferox Navy".to_string(), vec![2]), ("Muninn".to_string(), vec![3])]
@@ -208,22 +208,22 @@ mod tests {
 
     #[test]
     fn the_same_name_on_several_hulls_and_longer_names() {
-        // INIT-style: one name on several hulls, roles after the doctrine's name
+        // Some alliances name fits this way: one name on several hulls, roles after the doctrine's name
         let got = shape(&[
-            "i.Standard",
-            "i.Standard Logi",
-            "i.Standard Logi",
-            "i.Standard Boost Shield/Info",
-            "i.Standard Boost Shield/Info",
-            "i.Ghost T2",
-            "i.Ghost T2",
-            "i.Ghost Logi",
-            "i.Tank",
-            "i.Tank",
+            "x.Mainline",
+            "x.Mainline Logi",
+            "x.Mainline Logi",
+            "x.Mainline Boost Shield/Info",
+            "x.Mainline Boost Shield/Info",
+            "x.Kite T2",
+            "x.Kite T2",
+            "x.Kite Logi",
+            "x.Brawl",
+            "x.Brawl",
         ]);
         assert_eq!(
             got,
-            [("i.Standard".to_string(), vec![0, 1, 2, 3, 4]), ("i.Ghost".to_string(), vec![5, 6, 7]), ("i.Tank".to_string(), vec![8, 9])]
+            [("x.Mainline".to_string(), vec![0, 1, 2, 3, 4]), ("x.Kite".to_string(), vec![5, 6, 7]), ("x.Brawl".to_string(), vec![8, 9])]
         );
     }
 
@@ -237,12 +237,12 @@ mod tests {
     #[test]
     fn generated_groups_never_replace_anything() {
         let mut doc = DoctrineDoc::default();
-        doc.groups.push(Group { id: "mine".into(), name: "INIT".into(), ..Default::default() });
+        doc.groups.push(Group { id: "mine".into(), name: "ABC".into(), ..Default::default() });
         let d = |n: &str| Doctrine { id: dc::new_id(), name: n.into(), ..Default::default() };
         add_generated(&mut doc, "From Kira", vec![d("Muninn")]);
         add_generated(&mut doc, "From Kira", vec![d("Muninn")]);
         assert_eq!(doc.groups.len(), 2);
-        assert_eq!(doc.groups[0].name, "INIT");
+        assert_eq!(doc.groups[0].name, "ABC");
         let auto = &doc.groups[1];
         assert_eq!((auto.name.as_str(), auto.groups.len()), (AUTO_GROUP, 2));
         assert_ne!(auto.groups[0].id, auto.groups[1].id);
@@ -251,12 +251,12 @@ mod tests {
     #[test]
     fn esi_fittings_become_parsed_fits() {
         let f: EsiFitting = serde_json::from_str(
-            r#"{"fitting_id":1,"name":" INIT Muninn - DPS ","description":"","ship_type_id":12015,
+            r#"{"fitting_id":1,"name":" ABC Muninn - DPS ","description":"","ship_type_id":12015,
                "items":[{"type_id":2048,"flag":"LoSlot0","quantity":1},{"type_id":2048,"flag":"LoSlot1","quantity":1}]}"#,
         )
         .unwrap();
         let p = parsed(f);
-        assert_eq!((p.fit_name.as_deref(), &p.ship), (Some("INIT Muninn - DPS"), &ItemRef::TypeId(12015)));
+        assert_eq!((p.fit_name.as_deref(), &p.ship), (Some("ABC Muninn - DPS"), &ItemRef::TypeId(12015)));
         assert_eq!(p.items, vec![FitItem { item: ItemRef::TypeId(2048), quantity: 2 }]);
     }
 }
