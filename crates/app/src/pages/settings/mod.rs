@@ -324,16 +324,45 @@ fn window_card(ctx: &Ctx) -> gtk::Box {
 }
 
 fn updates_card(ctx: &Ctx) -> gtk::Box {
-    use podstack_core::features::updates::{UpdateSettings, SETTINGS_KEY};
+    use podstack_core::features::updates::{self, UpdateSettings, SETTINGS_KEY};
     let card = settings_card("system_update", "Updates", Some(&format!("You have PodStack {}.", config::VERSION)), &[]);
     let core = ctx.core().clone();
     let s: UpdateSettings = core.setting(SETTINGS_KEY);
-    card.append(&w::switch_row(
-        "Check for new versions",
-        Some("Asks GitHub for the latest release when PodStack starts, and shows a button in the top bar when there's a newer one."),
-        s.check,
-        move |on| core.set_setting(SETTINGS_KEY, &UpdateSettings { check: on }),
-    ));
+    let save = {
+        let core = core.clone();
+        std::rc::Rc::new(move |f: &dyn Fn(&mut UpdateSettings)| {
+            let mut s: UpdateSettings = core.setting(SETTINGS_KEY);
+            f(&mut s);
+            core.set_setting(SETTINGS_KEY, &s);
+        })
+    };
+    {
+        let save = save.clone();
+        card.append(&w::switch_row(
+            "Check for new versions",
+            Some("Asks GitHub for the latest release when PodStack starts, and shows a button in the top bar when there's a newer one."),
+            s.check,
+            move |on| save(&|s| s.check = on),
+        ));
+    }
+    if updates::can_self_update() {
+        let auto = w::switch_row(
+            "Install updates automatically",
+            Some("Downloads a new version as soon as it's found and installs it when you quit PodStack. Without this, the top bar button asks first."),
+            s.auto_install,
+            move |on| save(&|s| s.auto_install = on),
+        );
+        card.append(&auto);
+    } else {
+        card.append(&w::text(
+            if cfg!(windows) {
+                "This copy came from the portable zip, so it can't update itself: download the new zip, or use the installer, which can."
+            } else {
+                "Update PodStack with your package manager, or from the release page."
+            },
+            &["body-small", "dim"],
+        ));
+    }
     card
 }
 

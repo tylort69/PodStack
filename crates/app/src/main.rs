@@ -95,6 +95,8 @@ fn main() -> glib::ExitCode {
 
     let code = app.run();
     core.flush();
+    // an update waiting to install goes in now that the window is gone and the data is written
+    podstack_core::features::updates::run_pending();
     code
 }
 

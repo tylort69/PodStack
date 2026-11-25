@@ -52,6 +52,10 @@ Type: filesandordirs; Name: "{app}\share"
 [Files]
 Source: "..\..\dist\PodStack\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[INI]
+; Marks an installed copy (the portable zip has none): PodStack only updates itself when it finds this.
+Filename: "{app}\install.ini"; Section: "PodStack"; Key: "installer"; String: "1"; Flags: uninsdeletesection
+
 [Icons]
 ; The app id matches the one PodStack gives its process, so Windows notifications show as PodStack.
 Name: "{autoprograms}\PodStack Native"; Filename: "{app}\bin\podstack.exe"; AppUserModelID: "io.github.tylort69.PodStack"
@@ -59,3 +63,11 @@ Name: "{autodesktop}\PodStack Native"; Filename: "{app}\bin\podstack.exe"; AppUs
 
 [Run]
 Filename: "{app}\bin\podstack.exe"; Description: "{cm:LaunchProgram,PodStack}"; Flags: nowait postinstall skipifsilent
+; PodStack's own updater runs this installer silently with /UPDATE=1 after quitting, and wants it back afterwards.
+Filename: "{app}\bin\podstack.exe"; Flags: nowait runasoriginaluser; Check: IsUpdate
+
+[Code]
+function IsUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;

@@ -572,12 +572,15 @@ fn debug_widths(window: &gtk::ApplicationWindow, threshold: i32) {
     });
 }
 
-/// A button in the top bar that appears when GitHub has a newer PodStack release, linking its page (Settings →
-/// General can turn the check off).
+/// A button in the top bar that appears when GitHub has a newer PodStack release (Settings → General can turn the
+/// check off). Where this copy can update itself (installed on Windows), it offers to update and restart, or with
+/// "Install updates automatically" downloads the update at once and installs it when PodStack quits; elsewhere it
+/// links the release page.
 fn update_button(ctx: &Ctx, core: &Arc<Core>) -> gtk::Box {
     use podstack_core::features::updates;
     let slot = w::hbox(0);
-    if !core.setting::<updates::UpdateSettings>(updates::SETTINGS_KEY).check {
+    let settings = core.setting::<updates::UpdateSettings>(updates::SETTINGS_KEY);
+    if !settings.check {
         return slot;
     }
     let (s, ctx) = (slot.clone(), ctx.clone());
@@ -585,12 +588,160 @@ fn update_button(ctx: &Ctx, core: &Arc<Core>) -> gtk::Box {
         Ok(Some(release)) => {
             tracing::info!("PodStack {} is available", release.version);
             let button = w::button_icon("system_update", &format!("PodStack {}", release.version), Btn::Tonal);
-            button.set_tooltip_text(Some("A new version is out: open its release page"));
-            button.connect_clicked(move |_| w::open_url(&ctx, &release.url));
             s.append(&button);
+            match release.installer.clone().filter(|_| updates::can_self_update()) {
+                None => {
+                    button.set_tooltip_text(Some("A new version is out: open its release page"));
+                    button.connect_clicked(move |_| w::open_url(&ctx, &release.url));
+                }
+                Some(installer) => {
+                    let up = Rc::new(Updater { ctx: ctx.clone(), release, installer, button: button.clone(), state: RefCell::new(UpdateState::Idle) });
+                    button.set_tooltip_text(Some("A new version is out: update and restart, or read what's new"));
+                    let u = up.clone();
+                    button.connect_clicked(move |_| u.clicked());
+                    if settings.auto_install {
+                        up.download(false);
+                    }
+                }
+            }
         }
         Ok(None) => {}
         Err(e) => tracing::info!("couldn't check for a new version: {e}"),
     });
     slot
+}
+
+enum UpdateState {
+    Idle,
+    /// Downloading; restart when it's done.
+    Downloading { restart: bool },
+    /// Downloaded and checked: installs when PodStack quits.
+    Ready,
+}
+
+/// Updating an installed Windows copy from the top bar's button.
+struct Updater {
+    ctx: Ctx,
+    release: podstack_core::features::updates::Release,
+    installer: podstack_core::features::updates::Installer,
+    button: gtk::Button,
+    state: RefCell<UpdateState>,
+}
+
+impl Updater {
+    fn set_label(&self, text: &str) {
+        if let Some(label) = self.button.child().and_then(|c| c.last_child()).and_downcast::<gtk::Label>() {
+            label.set_text(text);
+        }
+    }
+
+    fn clicked(self: &Rc<Self>) {
+        let state = std::mem::replace(&mut *self.state.borrow_mut(), UpdateState::Idle);
+        match state {
+            UpdateState::Ready => self.restart(),
+            UpdateState::Downloading { .. } => {
+                // already on its way: restart once it's in
+                *self.state.borrow_mut() = UpdateState::Downloading { restart: true };
+                self.ctx.toast("PodStack restarts to update once the download finishes");
+            }
+            UpdateState::Idle => self.ask(),
+        }
+    }
+
+    fn ask(self: &Rc<Self>) {
+        let v = &self.release.version;
+        let (win, content, actions) = w::dialog(&self.ctx, &format!("Update to PodStack {v}"), 460);
+        content.append(&w::text(
+            &format!(
+                "PodStack downloads the installer ({:.0} MB), checks it, closes, installs the update and opens again. Your \
+                 characters and settings stay as they are.",
+                self.installer.size as f64 / 1_048_576.0
+            ),
+            &["body-medium", "dim"],
+        ));
+        let notes = w::button("What's new", Btn::Text);
+        let (ctx, url) = (self.ctx.clone(), self.release.url.clone());
+        notes.connect_clicked(move |_| w::open_url(&ctx, &url));
+        let spacer = w::hbox(0);
+        spacer.set_hexpand(true);
+        let cancel = w::button("Not now", Btn::Text);
+        let wc = win.clone();
+        cancel.connect_clicked(move |_| wc.close());
+        let go = w::button("Update and restart", Btn::Filled);
+        let (wc, me) = (win.clone(), self.clone());
+        go.connect_clicked(move |_| {
+            wc.close();
+            me.download(true);
+        });
+        actions.set_halign(gtk::Align::Fill);
+        actions.append(&notes);
+        actions.append(&spacer);
+        actions.append(&cancel);
+        actions.append(&go);
+        win.present();
+    }
+
+    /// Downloads the installer; then restarts into it, or (`restart` false) keeps it for when PodStack quits.
+    fn download(self: &Rc<Self>, restart: bool) {
+        use podstack_core::features::updates;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        *self.state.borrow_mut() = UpdateState::Downloading { restart };
+        self.set_label("Downloading update…");
+        let done = Arc::new((AtomicU64::new(0), AtomicU64::new(0)));
+        // the download reports from the network thread; the label follows it from here
+        let (weak, d) = (Rc::downgrade(self), done.clone());
+        glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+            let Some(me) = weak.upgrade() else { return glib::ControlFlow::Break };
+            if !matches!(*me.state.borrow(), UpdateState::Downloading { .. }) {
+                return glib::ControlFlow::Break;
+            }
+            let (got, total) = (d.0.load(Ordering::Relaxed), d.1.load(Ordering::Relaxed));
+            if let Some(pct) = (got * 100).checked_div(total) {
+                me.set_label(&format!("Downloading update… {pct}%"));
+            }
+            glib::ControlFlow::Continue
+        });
+        let installer = self.installer.clone();
+        let me = self.clone();
+        crate::rt::run(
+            async move {
+                updates::download(&installer, |got, total| {
+                    done.0.store(got, Ordering::Relaxed);
+                    done.1.store(total, Ordering::Relaxed);
+                })
+                .await
+            },
+            move |result| match result {
+                Ok(path) => {
+                    let restart = matches!(*me.state.borrow(), UpdateState::Downloading { restart: true });
+                    updates::set_pending(Some(updates::PendingInstall { path, relaunch: false }));
+                    *me.state.borrow_mut() = UpdateState::Ready;
+                    if restart {
+                        me.restart();
+                    } else {
+                        me.set_label(&format!("Restart to update to {}", me.release.version));
+                        me.button.set_tooltip_text(Some("The update is downloaded: restart now, or it installs when you quit PodStack"));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("couldn't download the update: {e}");
+                    *me.state.borrow_mut() = UpdateState::Idle;
+                    me.set_label(&format!("PodStack {}", me.release.version));
+                    me.ctx.toast(&format!("Couldn't download the update: {e}"));
+                }
+            },
+        );
+    }
+
+    /// Quits so the installer can replace PodStack's files, and asks it to start PodStack again afterwards.
+    fn restart(&self) {
+        use podstack_core::features::updates;
+        if let Some(mut p) = updates::pending() {
+            p.relaunch = true;
+            updates::set_pending(Some(p));
+        }
+        if let Some(app) = self.ctx.window().application() {
+            app.quit();
+        }
+    }
 }

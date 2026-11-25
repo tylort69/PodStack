@@ -235,11 +235,17 @@ and run it. It installs for your user only (no administrator prompt) into `%LOCA
 adds PodStack to the Start menu and can be removed from **Settings → Apps** like any other app. Installing a newer
 version over it keeps your characters and settings.
 
+An installed PodStack updates itself: when a new version is out, the button in the top bar offers **Update and
+restart**. PodStack then downloads the new installer, checks it against the release's SHA-256 file, closes, installs
+it and opens again. With **Install updates automatically** (Settings → General → Updates) it downloads new versions
+by itself and installs them the next time you quit PodStack.
+
 The installer isn't code-signed yet, so Windows SmartScreen may say it "protected your PC". Choose **More info →
 Run anyway** to continue.
 
 Prefer not to install? The **portable zip** runs from any folder: unzip it and start `bin\podstack.exe`. Windows
-only shows notifications for installed apps, so desktop alerts need the installer (Discord alerts work either way).
+only shows notifications for installed apps, so desktop alerts need the installer (Discord alerts work either way),
+and the portable copy doesn't update itself: its top bar button links the new release instead.
 
 PodStack Native keeps its files apart from the original Electron PodStack, so you can have both installed.
 
@@ -283,7 +289,8 @@ light or system mode, with a choice of scheme variant and contrast:
 ## Your data and privacy
 
 - PodStack talks to CCP (the EVE login servers, the ESI API and CCP's static data downloads), to GitHub once per
-  start to see whether a newer PodStack is out (Settings → General → Updates turns that off), to zKillboard about
+  start to see whether a newer PodStack is out (Settings → General → Updates turns that off) and, on Windows, to
+download the update when you ask for it, to zKillboard about
   once an hour per character for its killmails, sending only the character's public ID (the switch on the Kills &
   Losses page turns that off), and to Discord only if you set up Discord alerts. There is no PodStack server,
   account, analytics or telemetry.
