@@ -13,8 +13,11 @@ use std::rc::Rc;
 const REPOSITORY: &str = "https://github.com/tylort69/PodStack";
 const ORIGINAL_PROJECT: &str = "https://github.com/PrometheusSatyen/Cerebral";
 const LICENSE_URL: &str = "https://www.gnu.org/licenses/agpl-3.0.html";
-/// In-game character that receives ISK donations.
-const DONATION_CHARACTER: &str = "1234nin4321";
+/// In-game characters that receive ISK donations, with what each did for PodStack.
+const DONATION_CHARACTERS: &[(&str, &str)] = &[
+    ("1234nin4321", "Made the original PodStack for Windows"),
+    ("Alaheem Jihad", "Made the Linux build and turned PodStack into the full-featured app it is now"),
+];
 /// Daily downtime, EVE time (UTC).
 const DOWNTIME_HOUR: u32 = 11;
 /// ESI caches the status for 30 seconds; once a minute is plenty.
@@ -335,26 +338,30 @@ fn donate_card(ctx: &Ctx) -> gtk::Box {
     let body = w::vbox(12);
     body.append(&w::text(
         "PodStack is free and always will be. If it's saved you a few hours of spreadsheet wrangling (or an idle \
-         queue), an ISK donation keeps the developer in ships and the updates coming.",
+         queue), an ISK donation keeps its developers in ships and the updates coming.",
         &["body-medium"],
     ));
-    let boxed = w::hbox(16);
-    boxed.add_css_class("about-donate");
-    let names = w::vbox(2);
-    names.set_hexpand(true);
-    names.append(&w::line("Send ISK in game to", &["label-medium", "dim"]));
-    names.append(&w::line(DONATION_CHARACTER, &["title-large"]));
-    boxed.append(&names);
-    let copy = w::button_icon("content_copy", "Copy name", Btn::Tonal);
-    copy.set_valign(gtk::Align::Center);
-    {
-        let ctx = ctx.clone();
-        copy.connect_clicked(move |_| w::copy_to_clipboard(&ctx, DONATION_CHARACTER));
+    body.append(&w::line("Send ISK in game to", &["label-medium", "dim"]));
+    for (name, what) in DONATION_CHARACTERS {
+        let boxed = w::hbox(16);
+        boxed.add_css_class("about-donate");
+        let names = w::vbox(2);
+        names.set_hexpand(true);
+        names.append(&w::line(name, &["title-large"]));
+        let role = w::text(what, &["body-small", "dim"]);
+        names.append(&role);
+        boxed.append(&names);
+        let copy = w::button_icon("content_copy", "Copy name", Btn::Tonal);
+        copy.set_valign(gtk::Align::Center);
+        {
+            let ctx = ctx.clone();
+            copy.connect_clicked(move |_| w::copy_to_clipboard(&ctx, name));
+        }
+        boxed.append(&copy);
+        body.append(&boxed);
     }
-    boxed.append(&copy);
-    body.append(&boxed);
     body.append(&w::text(
-        "In EVE: search for the character, right-click their name and choose Give Money. Donations are gifts: they \
+        "In EVE: search for a character, right-click their name and choose Give Money. Donations are gifts: they \
          don't unlock anything, and every PodStack feature stays free.",
         &["body-small", "dim"],
     ));
