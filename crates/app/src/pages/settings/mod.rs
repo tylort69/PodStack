@@ -146,12 +146,12 @@ fn login_card(ctx: &Ctx) -> gtk::Box {
     );
     let b = block(12);
     b.append(&w::text(
-        "By default PodStack uses its own EVE application: after logging in, the browser lands on a page that \
-         doesn't load, and you paste its address back into PodStack. You can register your own application at \
-         developers.eveonline.com instead (tick every scope PodStack uses) and enter its client ID and callback \
-         here. With a callback such as http://127.0.0.1:8765/callback, PodStack listens on that port and catches \
-         the login automatically. Characters already added keep working: each remembers the application that \
-         logged it in.",
+        "By default PodStack uses its own EVE application, and the login finishes by itself: nothing to set up. You \
+         can register your own application at developers.eveonline.com instead (tick every scope PodStack uses) and \
+         enter its client ID and callback here. With a callback such as http://127.0.0.1:8766/callback, PodStack \
+         listens on that port and catches the login automatically; with any other callback you paste the address \
+         the browser ends on. Characters already added keep working: each remembers the application that logged it \
+         in.",
         &["body-medium", "dim"],
     ));
 
@@ -161,7 +161,7 @@ fn login_card(ctx: &Ctx) -> gtk::Box {
     client.set_text(sso_now.client_id.as_deref().unwrap_or(""));
     client.set_hexpand(true);
     let callback = gtk::Entry::new();
-    callback.set_placeholder_text(Some("Callback URL, e.g. http://127.0.0.1:8765/callback"));
+    callback.set_placeholder_text(Some("Callback URL, e.g. http://127.0.0.1:8766/callback"));
     callback.set_text(sso_now.callback.as_deref().unwrap_or(""));
     callback.set_hexpand(true);
     let fields = w::hbox(12);
@@ -175,7 +175,7 @@ fn login_card(ctx: &Ctx) -> gtk::Box {
         move || {
             let (id, cb) = core.sso_client();
             if id == config::DEFAULT_CLIENT_ID {
-                status.set_text("Using PodStack's application: you'll paste the address the browser lands on.");
+                status.set_text("Using PodStack's application: logins finish by themselves.");
                 status.set_css_classes(&["body-medium", "dim"]);
             } else {
                 let how = match sso::loopback_port(&cb) {
@@ -232,7 +232,7 @@ fn login_card(ctx: &Ctx) -> gtk::Box {
                     let rest = cb.strip_prefix("http://").or_else(|| cb.strip_prefix("https://")).unwrap_or("");
                     let ok = !rest.is_empty() && !rest.starts_with('/') && !cb.contains(char::is_whitespace);
                     if !ok {
-                        ctx.toast("The callback must be a web address, e.g. http://127.0.0.1:8765/callback");
+                        ctx.toast("The callback must be a web address, e.g. http://127.0.0.1:8766/callback");
                         return;
                     }
                     SsoSettings { client_id: Some(id), callback: Some(cb) }

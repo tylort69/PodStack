@@ -13,11 +13,19 @@ pub const SSO_REVOKE_URL: &str = "https://login.eveonline.com/v2/oauth/revoke";
 
 /// PodStack's application on developers.eveonline.com (public client: the login uses PKCE, no secret). Users can
 /// register their own application and set its client id and callback in Settings → EVE login.
-pub const DEFAULT_CLIENT_ID: &str = "113d91f366b143b482676d8dcf517d1f";
-/// The callback registered for [`DEFAULT_CLIENT_ID`]. Nothing listens there: after logging in the browser shows an
-/// error page at this address and the user pastes that address back into PodStack. A client of the user's own with a
-/// loopback callback (`http://127.0.0.1:<port>/callback`) is picked up automatically instead.
-pub const DEFAULT_CALLBACK: &str = "https://localhost/callback";
+pub const DEFAULT_CLIENT_ID: &str = "6d39b24219b44240b660aeacb2bcb292";
+/// The callback registered for [`DEFAULT_CLIENT_ID`]: a loopback address PodStack listens on while the login dialog
+/// is open, so the login finishes by itself without any setup. If the port is taken, the browser shows an error page
+/// at this address and the user pastes that address into the dialog instead.
+pub const DEFAULT_CALLBACK: &str = "http://127.0.0.1:8765/callback";
+/// PodStack's earlier application, from before the login finished by itself. Characters logged in with it keep
+/// refreshing through it (refresh tokens stay with the application that issued them).
+pub const PREVIOUS_CLIENT_ID: &str = "113d91f366b143b482676d8dcf517d1f";
+
+/// Whether `client_id` is one of PodStack's own applications, current or earlier.
+pub fn is_podstack_client(client_id: &str) -> bool {
+    client_id == DEFAULT_CLIENT_ID || client_id == PREVIOUS_CLIENT_ID
+}
 /// The application inherited from Cerebral; refresh tokens it issued only work with it.
 pub const LEGACY_CLIENT_ID: &str = "c9fde897cdfb45208fb5254e3ee98d19";
 

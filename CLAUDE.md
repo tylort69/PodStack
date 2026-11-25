@@ -71,8 +71,9 @@ for reference: port behaviour from it, but don't edit it. The 3D ship viewer is 
 
 ## EVE SSO and ESI
 
-- Default login uses PodStack's EVE application (`config::DEFAULT_CLIENT_ID`, callback `https://localhost/callback`):
-  the user pastes the address the browser lands on. Users can set their own application with a loopback callback
-  (`http://127.0.0.1:<port>/callback`) in Settings, which PodStack listens on.
+- Default login uses PodStack's EVE application (`config::DEFAULT_CLIENT_ID`) with a loopback callback
+  (`config::DEFAULT_CALLBACK`) that the login dialog listens on; pasting the address the browser lands on is the
+  fallback. Users can set their own application in Settings. `config::PREVIOUS_CLIENT_ID` is PodStack's earlier
+  application, still used by characters it logged in.
 - Refresh tokens only work with the client id that issued them, so each character stores `client_id`.
 - Adding a scope needs it enabled on the EVE application at developers.eveonline.com first.

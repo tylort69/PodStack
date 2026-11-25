@@ -64,7 +64,7 @@ pub fn build(ctx: &Ctx, id: i64) -> Page {
         let s = w::status("Cerebral (older login)", Status::Warn);
         s.set_tooltip_text(Some("Added before PodStack had its own EVE application. Log in again to move it over."));
         s.upcast()
-    } else if auth.client_id == config::DEFAULT_CLIENT_ID {
+    } else if config::is_podstack_client(&auth.client_id) {
         w::status("PodStack", Status::Good).upcast()
     } else {
         let s = w::status("Your own application", Status::Info);

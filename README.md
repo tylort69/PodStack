@@ -260,16 +260,16 @@ or install the desktop entry in [`packaging/`](packaging) alongside it.
 ## Getting started
 
 1. Open PodStack and choose **Add character**.
-2. Log in with EVE Online in your browser and approve the permissions PodStack asks for.
-3. Your browser then tries to open `https://localhost/callback…` and shows an error page: that's expected. Copy the
-   address from the address bar and paste it into PodStack.
-4. Repeat for each of your characters. PodStack starts loading their data at once and keeps it fresh in the
+2. Log in with EVE Online in your browser and approve the permissions PodStack asks for. The browser then shows
+   "Logged in" and PodStack adds the character by itself. (If something else on your computer uses the port
+   PodStack listens on, the browser shows an error page instead: copy its address and paste it into PodStack.)
+3. Repeat for each of your characters. PodStack starts loading their data at once and keeps it fresh in the
    background.
 
-**Skip the copy and paste** by registering your own application at
+**Use your own EVE application** if you prefer: register it at
 [developers.eveonline.com](https://developers.eveonline.com) with a callback such as
-`http://127.0.0.1:8765/callback` and the scopes PodStack uses, then entering its client id and callback in
-**Settings → EVE login**. PodStack then catches the login by itself.
+`http://127.0.0.1:8766/callback` and the scopes PodStack uses, then enter its client id and callback in
+**Settings → EVE login**.
 
 **When PodStack asks for a new permission** (for example corporation contracts, used by buyback and courier
 corporations), log the character in again with **Add character**. If you use your own EVE application, enable the

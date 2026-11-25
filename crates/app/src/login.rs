@@ -1,5 +1,6 @@
-//! The "Add character" dialog: EVE SSO in the browser, then either a loopback callback (own EVE application with
-//! an http://127.0.0.1:<port>/… callback) or pasting the address the browser ended on.
+//! The "Add character" dialog: EVE SSO in the browser, then a loopback callback (PodStack's own application uses
+//! http://127.0.0.1:<port>/callback, so this needs no setup) or, as a fallback, pasting the address the browser ended
+//! on.
 
 use crate::ctx::{CharTab, Ctx, Route};
 use crate::rt;
@@ -105,7 +106,9 @@ pub fn show(ctx: &Ctx) {
                     match r {
                         Ok(Ok(u)) => finish(u),
                         Ok(Err(e)) => {
-                            error.set_text(&format!("Couldn't listen on port {port}: {e}"));
+                            error.set_text(&format!(
+                                "Couldn't listen on port {port} ({e}): paste the address the browser ends on below."
+                            ));
                             error.set_visible(true);
                         }
                         Err(_) => {
@@ -116,32 +119,35 @@ pub fn show(ctx: &Ctx) {
                 }
             },
         );
-    } else {
-        content.append(&w::text(
-            "After you authorize, the browser can't open the page it's sent to (https://localhost/callback…). That's \
-             expected: copy the whole address from the address bar and paste it here.",
-            &["body-small", "dim"],
-        ));
-        let entry = gtk::Entry::new();
-        entry.set_placeholder_text(Some("https://localhost/callback?code=…"));
-        content.append(&entry);
-        let add = w::button("Add character", Btn::Filled);
-        add.set_sensitive(false);
-        {
-            let add = add.clone();
-            entry.connect_changed(move |e| add.set_sensitive(e.text().contains("code=")));
-        }
-        {
-            let finish = finish.clone();
-            let entry2 = entry.clone();
-            add.connect_clicked(move |_| finish(entry2.text().to_string()));
-        }
-        {
-            let finish = finish.clone();
-            entry.connect_activate(move |e| finish(e.text().to_string()));
-        }
-        actions.append(&add);
     }
+    // pasting the address always works, also when the loopback port is taken
+    let hint = if loopback.is_some() {
+        "If the browser shows an error page instead of \"Logged in\", copy the whole address from its address bar and \
+         paste it here."
+    } else {
+        "After you authorize, the browser can't open the page it's sent to. That's expected: copy the whole address \
+         from the address bar and paste it here."
+    };
+    content.append(&w::text(hint, &["body-small", "dim"]));
+    let entry = gtk::Entry::new();
+    entry.set_placeholder_text(Some(&format!("{callback}?code=…")));
+    content.append(&entry);
+    let add = w::button("Add character", Btn::Filled);
+    add.set_sensitive(false);
+    {
+        let add = add.clone();
+        entry.connect_changed(move |e| add.set_sensitive(e.text().contains("code=")));
+    }
+    {
+        let finish = finish.clone();
+        let entry2 = entry.clone();
+        add.connect_clicked(move |_| finish(entry2.text().to_string()));
+    }
+    {
+        let finish = finish.clone();
+        entry.connect_activate(move |e| finish(e.text().to_string()));
+    }
+    actions.append(&add);
     content.append(&status);
     content.append(&error);
     win.present();
