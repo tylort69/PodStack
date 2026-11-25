@@ -5,11 +5,12 @@
 //! itself.
 
 use crate::ctx::Ctx;
+use crate::rt;
 use crate::widgets::{self as w, Btn};
 use gtk::prelude::*;
 use podstack_core::features::doctrine_inventory::{self as inv, Level, Source, StockPlace};
+use podstack_core::features::place_search as ps;
 use podstack_core::sde::MAP;
-use std::collections::BTreeMap;
 use podstack_core::features::doctrines as dc;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -19,7 +20,8 @@ const CSS: &str = "
 .dst-doctrine { margin-top: 12px; }
 .dst-fit { margin-left: 24px; }
 .dst-spin { min-width: 96px; }
-.dst-suggestions { min-width: 420px; }
+.dst-matches { border: 1px solid @outline_variant; border-radius: 12px; }
+.dst-matches list { background: transparent; }
 ";
 
 /// Where a target comes from, as the page and dialog say it.
@@ -248,20 +250,10 @@ struct Offer {
     sub: String,
 }
 
+/// Systems, and the stations and structures the characters already use (no network).
 fn offers(ctx: &Ctx, query: &str) -> Vec<Offer> {
-    let q = query.trim().to_lowercase();
-    if q.is_empty() {
+    if query.trim().is_empty() {
         return Vec::new();
-    }
-    let mut known: BTreeMap<i64, Offer> = BTreeMap::new();
-    for c in ctx.core().characters().iter() {
-        let Some(a) = &c.assets else { continue };
-        for p in a.locations.values().filter(|p| matches!(p.kind.as_str(), "station" | "structure")) {
-            if p.name.to_lowercase().contains(&q) {
-                let sub = format!("{} · {}", if p.kind == "station" { "Station" } else { "Structure" }, p.system_name.clone().unwrap_or_default());
-                known.entry(p.id).or_insert(Offer { place: StockPlace { id: p.id, name: p.name.clone(), system: false }, sub });
-            }
-        }
     }
     let mut out: Vec<Offer> = MAP
         .search_systems(query, 6)
@@ -271,10 +263,63 @@ fn offers(ctx: &Ctx, query: &str) -> Vec<Offer> {
             sub: format!("Whole system · {:.1} · {}", s.display_security(), MAP.region_name(s.region).unwrap_or("")),
         })
         .collect();
-    let mut stations: Vec<Offer> = known.into_values().collect();
-    stations.sort_by_key(|o| (!o.place.name.to_lowercase().starts_with(&q), o.place.name.len()));
-    out.extend(stations.into_iter().take(10));
+    out.extend(ps::known(&ctx.core().characters(), query).into_iter().take(10).map(found_offer));
     out
+}
+
+fn found_offer(f: ps::Found) -> Offer {
+    let sub = format!("{} · {} · {}", if f.structure { "Structure" } else { "Station" }, f.system_name, f.why.label());
+    Offer { place: StockPlace { id: f.id, name: f.name, system: false }, sub }
+}
+
+/// Fills the matches under the entry: the offers (their rows' indexes match `hits`), then a line on the search, if any.
+fn show_offers(results: &gtk::ListBox, matches: &gtk::ScrolledWindow, hits: &RefCell<Vec<Offer>>, found: Vec<Offer>, note: Option<&str>) {
+    while let Some(c) = results.first_child() {
+        results.remove(&c);
+    }
+    for o in &found {
+        let row = w::vbox(0);
+        row.set_margin_start(8);
+        row.set_margin_end(8);
+        row.set_margin_top(4);
+        row.set_margin_bottom(4);
+        row.append(&w::text(&o.place.name, &["body-medium"]));
+        row.append(&w::text(&o.sub, &["body-small", "dim"]));
+        results.append(&row);
+    }
+    if let Some(n) = note {
+        let t = w::text(n, &["body-small", "dim"]);
+        t.set_margin_start(8);
+        t.set_margin_end(8);
+        t.set_margin_top(6);
+        t.set_margin_bottom(6);
+        t.set_wrap(true);
+        t.set_max_width_chars(56);
+        let row = gtk::ListBoxRow::new();
+        row.set_activatable(false);
+        row.set_selectable(false);
+        row.set_child(Some(&t));
+        results.append(&row);
+    }
+    *hits.borrow_mut() = found;
+    matches.vadjustment().set_value(0.0);
+}
+
+/// What the search line says after the characters' searches ran.
+fn search_note(r: &ps::Remote, added: usize) -> Option<String> {
+    match (r.searched, r.without_scope) {
+        (0, 0) => None,
+        (0, _) => Some(
+            "To find private structures you have no assets in, log your characters in again and allow Search \
+             Structures."
+                .into(),
+        ),
+        (n, 0) => (added == 0).then(|| format!("No other stations or structures found by {n} character search{}.", if n == 1 { "" } else { "es" })),
+        (_, m) => Some(format!(
+            "{m} character{} can't search structures yet: log in again and allow Search Structures to search with them too.",
+            if m == 1 { "" } else { "s" }
+        )),
+    }
 }
 
 /// Draws the places list again (held by the dialog while it's open).
@@ -292,19 +337,24 @@ fn open_places(ctx: &Ctx, doctrine: &str, name: &str, changed: impl Fn() + 'stat
     let list = w::vbox(4);
     content.append(&list);
 
-    let entry = w::search_entry("Add a system, or a station or structure your characters use");
+    let entry = w::search_entry("Add a system, station or structure");
     let results = gtk::ListBox::new();
     results.set_selection_mode(gtk::SelectionMode::None);
-    results.add_css_class("dst-suggestions");
-    let pop = gtk::Popover::new();
-    pop.set_autohide(true);
-    pop.set_has_arrow(false);
-    pop.set_position(gtk::PositionType::Bottom);
-    pop.set_child(Some(&results));
-    pop.set_parent(&entry);
-    // popovers keep the keyboard focus: give it back to the entry so typing continues
-    pop.set_can_focus(false);
+    // the matches show under the entry, in the dialog: a popover on a dialog window doesn't reliably show under
+    // Wayland compositors, and the search's note needs room anyway
+    let matches = gtk::ScrolledWindow::new();
+    matches.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    // a fixed height: the dialog is sized when it opens, and a compositor needn't let it grow with the matches
+    matches.set_min_content_height(280);
+    matches.set_max_content_height(280);
+    matches.set_child(Some(&results));
+    matches.add_css_class("dst-matches");
+    let hint = w::text("Type a system, station or structure name.", &["body-medium", "dim"]);
+    hint.set_margin_top(12);
+    hint.set_margin_bottom(12);
+    results.set_placeholder(Some(&hint));
     content.append(&entry);
+    content.append(&matches);
 
     let changed: Rc<dyn Fn()> = Rc::new(changed);
     let redraw: Rc<RefCell<Option<Redraw>>> = Rc::default();
@@ -343,28 +393,42 @@ fn open_places(ctx: &Ctx, doctrine: &str, name: &str, changed: impl Fn() + 'stat
 
     let hits: Rc<RefCell<Vec<Offer>>> = Rc::default();
     {
-        let (ctx, results, pop, hits) = (ctx.clone(), results.clone(), pop.clone(), hits.clone());
+        // what's known shows at once; the characters' searches (stations of matching systems, and structures they
+        // can dock at) run once typing pauses, and only the latest one's results are shown
+        let (ctx, results, matches, hits) = (ctx.clone(), results.clone(), matches.clone(), hits.clone());
+        let generation = Rc::new(Cell::new(0u64));
         entry.connect_search_changed(move |e| {
-            while let Some(c) = results.first_child() {
-                results.remove(&c);
+            let query = e.text().to_string();
+            let local = offers(&ctx, &query);
+            let gen = generation.get() + 1;
+            generation.set(gen);
+            let remote = query.trim().chars().count() >= ps::MIN_SEARCH_LEN;
+            show_offers(&results, &matches, &hits, local, remote.then_some("Searching stations and structures…"));
+            if !remote {
+                return;
             }
-            let found = offers(&ctx, &e.text());
-            for o in &found {
-                let row = w::vbox(0);
-                row.set_margin_start(8);
-                row.set_margin_end(8);
-                row.set_margin_top(4);
-                row.set_margin_bottom(4);
-                row.append(&w::text(&o.place.name, &["body-medium"]));
-                row.append(&w::text(&o.sub, &["body-small", "dim"]));
-                results.append(&row);
-            }
-            *hits.borrow_mut() = found;
-            if hits.borrow().is_empty() {
-                pop.popdown();
-            } else {
-                pop.popup();
-            }
+            let (ctx, results, matches, hits, generation) = (ctx.clone(), results.clone(), matches.clone(), hits.clone(), generation.clone());
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(450), move || {
+                if generation.get() != gen {
+                    return;
+                }
+                let (core, chars, q) = (ctx.core().clone(), ctx.core().characters(), query.clone());
+                rt::run(async move { ps::remote(&core, &chars, &q).await }, move |r| {
+                    if generation.get() != gen {
+                        return;
+                    }
+                    let mut all = offers(&ctx, &query);
+                    let before = all.len();
+                    for f in r.found.iter().cloned() {
+                        if !all.iter().any(|o| !o.place.system && o.place.id == f.id) {
+                            all.push(found_offer(f));
+                        }
+                    }
+                    let added = all.len() - before;
+                    let note = search_note(&r, added);
+                    show_offers(&results, &matches, &hits, all, note.as_deref());
+                });
+            });
         });
     }
     let add = {
@@ -380,22 +444,22 @@ fn open_places(ctx: &Ctx, doctrine: &str, name: &str, changed: impl Fn() + 'stat
         })
     };
     {
-        let (hits, pop, entry2, add) = (hits.clone(), pop.clone(), entry.clone(), add.clone());
+        let (hits, entry2, add) = (hits.clone(), entry.clone(), add.clone());
         results.connect_row_activated(move |_, row| {
             let picked = hits.borrow().get(row.index() as usize).cloned();
             if let Some(o) = picked {
-                pop.popdown();
+                
                 entry2.set_text("");
                 add(&o);
             }
         });
     }
     {
-        let (hits, pop, add) = (hits.clone(), pop.clone(), add.clone());
+        let (hits, add) = (hits.clone(), add.clone());
         entry.connect_activate(move |e| {
             let picked = hits.borrow().first().cloned();
             if let Some(o) = picked {
-                pop.popdown();
+                
                 e.set_text("");
                 add(&o);
             }
@@ -406,9 +470,8 @@ fn open_places(ctx: &Ctx, doctrine: &str, name: &str, changed: impl Fn() + 'stat
     let w2 = win.clone();
     done.connect_clicked(move |_| w2.close());
     actions.append(&done);
-    // the popover is parented to the entry: unparent it with the window, and drop the redraw closure (it holds the list)
+    // drop the redraw closure with the window (it holds the list)
     win.connect_close_request(move |_| {
-        pop.unparent();
         redraw.borrow_mut().take();
         gtk::glib::Propagation::Proceed
     });

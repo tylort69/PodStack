@@ -114,9 +114,10 @@ For alliance pilots juggling several fleets and several characters.
 - **Stock** shows each pilot's stock of the doctrine ships it can fly: how many of each fit it has, fitted or as
   hulls, and where they are, against a **stock target** you set overall, per doctrine and per fit, for everyone or
   for one pilot. A doctrine can also name **places** its ships must be (stations, structures or whole systems, such
-  as a SIG's staging): then the target applies at each place and only ships there count. A **shopping list** for
-  each character and for all of them prices the rest at Jita and says where to take it; copy it into the game's
-  Multibuy or save it as a CSV file.
+  as a SIG's staging): then the target applies at each place and only ships there count. Places are found by name,
+  including private structures your characters can dock at, with no assets needed there. A **shopping list** for
+  each character, or for the characters you pick, prices the rest at Jita and says where to take it; copy it into
+  the game's Multibuy or save it as a CSV file.
 
 <img src="docs/screenshots/doctrines.png" width="100%" alt="A doctrine with its fits and who can fly each">
 

@@ -19,6 +19,8 @@ pub mod fitting;
 pub mod doctrines;
 // Doctrine ships owned and missing per character, and what the missing ones cost (`doctrine_inventory`)
 pub mod doctrine_inventory;
+// Stations and structures by name, for stock places, without needing assets there (`place_search`)
+pub mod place_search;
 // Assets with assembled ships holding their fittings and cargo, and values rolled up (`asset_tree`)
 pub mod asset_tree;
 
